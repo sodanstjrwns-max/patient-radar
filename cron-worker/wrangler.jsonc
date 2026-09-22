@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "patient-radar-cron",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "vars": { "RADAR_ORIGIN": "https://patient-radar.pages.dev" },
+  "triggers": {
+    "crons": [
+      "0 18 * * 1-5",   // 03:00 KST 월~금 · 정기 측정(요일 분산)
+      "30 23 * * 0"     // 08:30 KST 월요일 · 지난주 리포트 생성·발송
+    ]
+  },
+  "kv_namespaces": [{ "binding": "STATE", "id": "b54bf209e88f4ca89fef22ade1bdf5d9" }]
+  // secrets: CRON_SECRET (= ~/.ps-keys/radar-cron.key, 앱과 동일 값)
+}

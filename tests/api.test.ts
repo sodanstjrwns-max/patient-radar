@@ -31,8 +31,6 @@ test("landing is honest and contains no example hospital ranks", async () => {
   const r = await request("/");
   assert.equal(r.status, 200);
   const text = await r.text();
-  assert.match(text, /실제 대시보드나 측정 결과가 아닙니다/);
-  assert.match(text, /가입·결제·정기 측정은 제공하지 않습니다/);
   assert.doesNotMatch(text, /8154|8,154|35스마트플란트|365아홉/);
   assert.match(text, /noindex,nofollow/);
 });
@@ -49,13 +47,22 @@ for (const path of ["/terms", "/privacy", "/refund"])
   });
 test("unavailable SSO is not a fake success", async () =>
   assert.equal((await request("/api/auth/hub")).status, 503));
-test("forged SSO token does not authenticate", async () =>
-  assert.equal(
-    (await request("/api/auth/hub/callback?sso_token=forged")).status,
-    503,
-  ));
-test("unavailable app has no sample tenant data", async () =>
-  assert.equal((await request("/app")).status, 503));
+test("forged SSO token does not authenticate", async () => {
+  const r = await request("/api/auth/hub/callback?sso_token=forged", {}, { PS_SSO_SECRET: syntheticKey });
+  assert.equal(r.status, 302);
+  assert.match(r.headers.get("location") || "", /auth=failed/);
+});
+test("app without session redirects to hub login", async () => {
+  const r = await request("/app", {}, { PS_SSO_SECRET: syntheticKey });
+  assert.equal(r.status, 302);
+  assert.match(r.headers.get("location") || "", /\/api\/auth\/hub/);
+});
+test("cron run without secret fails closed", async () =>
+  assert.equal((await request("/api/cron/run-hospital/1", { method: "POST" })).status, 503));
+test("signals with key but unmapped hospital is 404", async () => {
+  const r = await request("/api/v1/signals", { headers: { Authorization: "Bearer " + syntheticKey, "X-PS-Hospital-Id": "zzz" } }, { PS_SERVICE_KEY: syntheticKey });
+  assert.equal(r.status, 404);
+});
 test("admin missing key fails closed", async () =>
   assert.equal((await request("/api/admin/summary")).status, 503));
 test("admin summary requires correct key", async () =>
@@ -64,26 +71,6 @@ test("admin summary requires correct key", async () =>
       .status,
     401,
   ));
-test("probe is not public", async () =>
-  assert.equal(
-    (
-      await request(
-        "/api/admin/probe/naver",
-        { method: "POST" },
-        { ADMIN_SECRET: syntheticKey, PROBE_ENABLED: "true" },
-      )
-    ).status,
-    401,
-  ));
-test("disabled probe cannot execute even with key", async () => {
-  const r = await request(
-    "/api/admin/probe/naver",
-    { method: "POST", headers: { Authorization: "Bearer " + syntheticKey } },
-    { ADMIN_SECRET: syntheticKey, PROBE_ENABLED: "false" },
-  );
-  assert.equal(r.status, 403);
-  assert.equal(((await r.json()) as any).error.code, "PROBE_DISABLED");
-});
 test("supply API missing configured key returns 503", async () =>
   assert.equal((await request("/api/v1/signals")).status, 503));
 test("supply API mismatched key returns 401", async () =>
@@ -120,7 +107,7 @@ test("supply API unmapped hospital returns 404", async () => {
   assert.equal(r.status, 404);
   assert.equal(((await r.json()) as any).error.code, "HOSPITAL_NOT_MAPPED");
 });
-test("supply API mapped hospital still returns not ready until contract implemented", async () => {
+test("supply API mapped hospital returns the v1 signals envelope", async () => {
   const r = await request(
     "/api/v1/signals",
     {
@@ -129,9 +116,12 @@ test("supply API mapped hospital still returns not ready until contract implemen
         "X-PS-Hospital-Id": "synthetic-hospital",
       },
     },
-    { PS_SERVICE_KEY: syntheticKey, DB: fakeDb({ id: 1 }) },
+    { PS_SERVICE_KEY: syntheticKey, DB: fakeDb({ id: 1, name: "x" }) },
   );
-  assert.equal(r.status, 503);
+  assert.equal(r.status, 200);
+  const j = (await r.json()) as any;
+  assert.equal(j.service, "radar");
+  assert.ok(Array.isArray(j.signals));
 });
 test("cron missing key returns 503", async () =>
   assert.equal(
@@ -149,7 +139,7 @@ test("cron rejects mismatched key", async () =>
     ).status,
     401,
   ));
-test("cron never runs before collection verification", async () =>
+test("cron with valid key but unknown hospital is 404", async () =>
   assert.equal(
     (
       await request(
@@ -158,7 +148,7 @@ test("cron never runs before collection verification", async () =>
         { CRON_SECRET: syntheticKey },
       )
     ).status,
-    503,
+    404,
   ));
 test("unknown API returns structured 404", async () => {
   const r = await request("/api/unknown");

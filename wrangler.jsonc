@@ -5,7 +5,7 @@
   "pages_build_output_dir": "./dist",
   "vars": {
     "PUBLIC_ORIGIN": "https://patientradar.kr",
-    "PROBE_ENABLED": "false",
+    "NAVER_HTML_MODE": "true", // 원장 결정 대기: 공식 검색 API 키(NAVER_CLIENT_ID/SECRET)를 넣으면 이 값을 지우고 API 모드로 전환
   },
   "d1_databases": [
     {
