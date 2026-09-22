@@ -1,0 +1,36 @@
+{
+  "id": "0ee0fd76-3587-4870-9adb-679a758f58c6",
+  "status": "policy_blocked",
+  "result_json": {
+    "id": "0ee0fd76-3587-4870-9adb-679a758f58c6",
+    "keyword": "천안 임플란트",
+    "environment": "cloudflare-pages",
+    "startedAt": "2026-09-23T00:07:24.738+09:00",
+    "status": "policy_blocked",
+    "targetRequests": 0,
+    "attempts": [],
+    "robots": {
+      "search": {
+        "url": "https://m.search.naver.com/robots.txt",
+        "httpStatus": 200,
+        "allowed": false,
+        "reason": "ROBOTS_DISALLOWED",
+        "matchedRule": "Disallow: /",
+        "crawlDelayMs": 0
+      },
+      "place": {
+        "url": "https://m.place.naver.com/robots.txt",
+        "httpStatus": 429,
+        "allowed": false,
+        "reason": "ROBOTS_UNAVAILABLE",
+        "matchedRule": null,
+        "crawlDelayMs": 0
+      }
+    },
+    "stopReason": "ROBOTS_DISALLOWED",
+    "remainingAttemptsSkipped": 3,
+    "finishedAt": "2026-09-23T00:07:34.711+09:00"
+  },
+  "started_at": "2026-09-23T00:07:24.738+09:00",
+  "finished_at": "2026-09-23T00:07:34.711+09:00"
+}

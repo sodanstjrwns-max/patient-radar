@@ -19,6 +19,14 @@ node_modules/
 .env
 .env.production
 .dev.vars
+.dev.vars.*
+.env.*
+!.env.example
+*.key
+*.pem
+artifacts/private/
+*.tar.gz
+*.zip
 
 # logs
 logs/

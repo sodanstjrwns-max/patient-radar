@@ -1,0 +1,145 @@
+{
+  "checkedAt": "2026-09-22T15:13:34.155Z",
+  "results": [
+    {
+      "path": "/",
+      "viewport": 1440,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/pricing",
+      "viewport": 1440,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/terms",
+      "viewport": 1440,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/privacy",
+      "viewport": 1440,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/refund",
+      "viewport": 1440,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/",
+      "viewport": 768,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/pricing",
+      "viewport": 768,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/terms",
+      "viewport": 768,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/privacy",
+      "viewport": 768,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/refund",
+      "viewport": 768,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/",
+      "viewport": 390,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/pricing",
+      "viewport": 390,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/terms",
+      "viewport": 390,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/privacy",
+      "viewport": 390,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/refund",
+      "viewport": 390,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/",
+      "viewport": 320,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/pricing",
+      "viewport": 320,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/terms",
+      "viewport": 320,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/privacy",
+      "viewport": 320,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    },
+    {
+      "path": "/refund",
+      "viewport": 320,
+      "status": 200,
+      "horizontalOverflow": false,
+      "mode": "CSS1Compat"
+    }
+  ]
+}

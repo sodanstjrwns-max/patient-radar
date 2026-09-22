@@ -1,9 +1,16 @@
 {
-  "name": "webapp",
+  "name": "patient-radar",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "probe": "tsx scripts/probe.ts",
+    "deploy:prod": "npm run build && wrangler pages deploy dist --project-name patient-radar --branch main",
+    "db:migrate:local": "wrangler d1 migrations apply patient-radar-production --local",
+    "db:migrate:remote": "wrangler d1 migrations apply patient-radar-production --remote",
     "preview": "wrangler pages dev",
     "deploy": "npm run build && wrangler pages deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
@@ -12,8 +19,14 @@
     "hono": "^4.13.8"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260922.1",
     "@hono/vite-build": "^1.11.1",
     "@hono/vite-dev-server": "^0.26.1",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.2",
+    "prettier": "^3.9.8",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
     "vite": "^8.1.4",
     "wrangler": "^4.110.0"
   }
