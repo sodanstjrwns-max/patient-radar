@@ -39,3 +39,4 @@
 @media (max-width:640px){.score-big{font-size:48px}.bar-row{grid-template-columns:110px 1fr 44px}}
 
 .weighted{margin:8px 0 0;font-size:15px}.defs li{font-size:14px;color:var(--muted);line-height:1.6}.defs b{color:var(--text)}.matrix td.vol{color:var(--muted)}
+.kw-item .kw-text{flex:1}.vol-badge{font-size:11px;color:var(--teal);border:1px solid rgba(96,223,197,.4);border-radius:6px;padding:0 5px;white-space:nowrap}

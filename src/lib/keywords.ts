@@ -45,3 +45,32 @@ export function generateKeywords(opts: { region: string | null; clinicType: stri
   }
   return out.slice(0, Math.max(0, opts.limit));
 }
+
+export type Candidate = { text: string; volume: number | null; pc: number | null; mobile: number | null; low: boolean; source: "auto" | "related" };
+const squash = (s: string) => s.replace(/\s+/g, "");
+
+/**
+ * 검색량 기준 후보 정렬. ideas(검색광고 연관 키워드)에서 지역명이 들어간 것을 추가 후보로 합치고,
+ * 월 검색수(PC+모바일) 내림차순으로 정렬한다. 검색수가 없는 후보는 뒤로.
+ */
+export function rankCandidates(generated: string[], ideas: { keyword: string; pc: number | null; mobile: number | null; low: boolean }[], region: string | null, opts: { maxRelated?: number; minVolume?: number; excludeWords?: string[] } = {}): Candidate[] {
+  const locs = localityCandidates(region).map(squash);
+  const byKey = new Map<string, Candidate>();
+  const ideaMap = new Map(ideas.map((i) => [squash(i.keyword), i]));
+  for (const g of generated) {
+    const k = squash(g); const i = ideaMap.get(k);
+    byKey.set(k, { text: g, volume: i ? (i.pc ?? 0) + (i.mobile ?? 0) : null, pc: i?.pc ?? null, mobile: i?.mobile ?? null, low: !!i?.low, source: "auto" });
+  }
+  const bad = (opts.excludeWords || ["가격", "비용", "후기", "추천", "잘하는곳", "잘하는", "순위", "유명한", "싼", "저렴"]).map(squash);
+  let related = 0;
+  for (const i of ideas.sort((a, b) => ((b.pc ?? 0) + (b.mobile ?? 0)) - ((a.pc ?? 0) + (a.mobile ?? 0)))) {
+    const k = squash(i.keyword);
+    if (byKey.has(k) || k.length > 12 || !locs.some((l) => k.includes(l))) continue;
+    const vol = (i.pc ?? 0) + (i.mobile ?? 0);
+    if (vol < (opts.minVolume ?? 100)) continue;
+    if (bad.some((b) => k.includes(b))) continue; // 비교·가격형 키워드는 광고성 노출이라 순위 측정 대상에서 뺀다
+    byKey.set(k, { text: i.keyword, volume: vol, pc: i.pc, mobile: i.mobile, low: i.low, source: "related" });
+    if (++related >= (opts.maxRelated ?? 15)) break;
+  }
+  return [...byKey.values()].sort((a, b) => (b.volume ?? -1) - (a.volume ?? -1));
+}

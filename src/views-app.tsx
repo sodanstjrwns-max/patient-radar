@@ -77,19 +77,20 @@ export function Step1({ h, prefill, error }: { h: { name: string; plan: string }
   );
 }
 
-export function Step2({ h, keywords, limit, error }: { h: { name: string; plan: string }; keywords: { id: number; text: string; is_active: number; source: string }[]; limit: number; error?: string }) {
+export const volText = (k: { monthly_pc?: number | null; monthly_mobile?: number | null; volume_low?: number }) => (k.monthly_pc == null && k.monthly_mobile == null ? null : `${((k.monthly_pc ?? 0) + (k.monthly_mobile ?? 0)).toLocaleString()}${k.volume_low ? "↓" : ""}`);
+export function Step2({ h, keywords, limit, error, withVolume }: { h: { name: string; plan: string }; keywords: { id: number; text: string; is_active: number; source: string; monthly_pc?: number | null; monthly_mobile?: number | null; volume_low?: number }[]; limit: number; error?: string; withVolume?: boolean }) {
   const active = keywords.filter((k) => k.is_active).length;
   return (
     <AppLayout title="온보딩 2/3 키워드" hospital={h} active="">
       <section class="card narrow">
         <p class="eyebrow">STEP 2 / 3</p>
         <h1>측정할 키워드</h1>
-        <p class="muted">「지역 × 진료」로 자동 생성했습니다. 환자가 실제로 검색할 말만 남기세요. 플랜 한도 <b>{limit}개</b> · 현재 {active}개 선택.</p>
+        <p class="muted">{withVolume ? "「지역 × 진료」 조합과 네이버 연관 검색어를 월 검색수 순으로 정렬해, 많이 찾는 것부터 켜 두었습니다." : "「지역 × 진료」로 자동 생성했습니다."} 환자가 실제로 검색할 말만 남기세요. 플랜 한도 <b>{limit}개</b> · 현재 {active}개 선택.</p>
         {error ? <p class="error">{error}</p> : null}
         <form method="post" action="/app/onboarding/step2" class="form">
           <div class="kw-grid">
             {keywords.map((k) => (
-              <label class="kw-item"><input type="checkbox" name="active" value={String(k.id)} checked={!!k.is_active} /> {k.text}{k.source === "manual" ? <small class="muted"> 직접</small> : null}</label>
+              <label class="kw-item"><input type="checkbox" name="active" value={String(k.id)} checked={!!k.is_active} /> <span class="kw-text">{k.text}</span>{volText(k) ? <small class="vol-badge">월 {volText(k)}</small> : null}{k.source === "manual" ? <small class="muted"> 직접</small> : k.source === "related" ? <small class="muted"> 연관</small> : null}</label>
             ))}
           </div>
           <label>추가 키워드 (한 줄에 하나)<textarea name="extra" rows={3} placeholder="천안 앞니 라미네이트"></textarea></label>
@@ -261,7 +262,7 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
 export function Settings({ h, hospital, keywords, competitors, settings, users, limits, platform, flash }: {
   h: { name: string; plan: string };
   hospital: { name: string; aliases: string; clinic_type: string; region: string; treatments: string; naver_place_id: string; website_url: string };
-  keywords: { id: number; text: string; is_active: number; source: string }[];
+  keywords: { id: number; text: string; is_active: number; source: string; monthly_pc?: number | null; monthly_mobile?: number | null; volume_low?: number }[];
   competitors: { id: number; name: string; is_active: number; naver_place_id: string | null }[];
   settings: { report_email_enabled: number; report_recipients: string };
   users: { email: string; name: string | null; role: string }[];
@@ -287,9 +288,10 @@ export function Settings({ h, hospital, keywords, competitors, settings, users, 
       <section class="card">
         <div class="card-head"><h2>키워드 <small class="muted">{keywords.filter((k) => k.is_active).length} / {limits.keywords}개 사용 중</small></h2></div>
         <form method="post" action="/app/settings/keywords" class="form">
-          <div class="kw-grid">{keywords.map((k) => <label class="kw-item"><input type="checkbox" name="active" value={String(k.id)} checked={!!k.is_active} /> {k.text}{k.source === "manual" ? <small class="muted"> 직접</small> : null}</label>)}</div>
+          <div class="kw-grid">{keywords.map((k) => <label class="kw-item"><input type="checkbox" name="active" value={String(k.id)} checked={!!k.is_active} /> <span class="kw-text">{k.text}</span>{volText(k) ? <small class="vol-badge">월 {volText(k)}</small> : null}{k.source === "manual" ? <small class="muted"> 직접</small> : k.source === "related" ? <small class="muted"> 연관</small> : null}</label>)}</div>
           <label>추가 (한 줄에 하나)<textarea name="extra" rows={2}></textarea></label>
-          <div class="row"><button class="button button-primary" type="submit">키워드 저장</button><button class="button button-outline" type="submit" name="regen" value="1">자동 생성 다시 만들기</button></div>
+          <div class="row"><button class="button button-primary" type="submit">키워드 저장</button><button class="button button-outline" type="submit" name="regen" value="1">후보 다시 만들기 (검색량 순)</button></div>
+          <p class="muted small">월 검색수 = 네이버 최근 30일 PC+모바일. 새 후보는 꺼진 상태로 추가되고 기존 선택은 유지됩니다.</p>
         </form>
       </section>
       <section class="card">

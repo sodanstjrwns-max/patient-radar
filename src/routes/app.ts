@@ -3,7 +3,8 @@ import { Hono } from "hono";
 import type { AppEnv, HospitalRow } from "../lib/session";
 import { requireSession } from "../lib/session";
 import { HUB_ORIGIN, platformAvailability } from "../lib/config";
-import { generateKeywords, normalizeTreatments } from "../lib/keywords";
+import { generateKeywords, normalizeTreatments, rankCandidates, type Candidate } from "../lib/keywords";
+import { fetchKeywordIdeas } from "../collectors/naver-searchad";
 import { limitsOf } from "../lib/plan-limits";
 import { runHospital, loadEntities, obsScore, parseJsonArr, usablePlatforms } from "../lib/measure";
 import { htmlSerp } from "../collectors/naver-html";
@@ -37,6 +38,25 @@ async function hubProfile(c: { env: AppEnv["Bindings"] }, hid: string | null) {
   } catch { return null; }
 }
 
+/** 「지역 × 진료」 생성 후, 검색광고 API가 있으면 검색량과 연관 키워드로 재정렬한다 */
+async function buildCandidates(env: AppEnv["Bindings"], region: string, clinicType: string | null, treatments: string[], limit: number): Promise<{ list: Candidate[]; withVolume: boolean }> {
+  const generated = generateKeywords({ region, clinicType, treatments, limit: limit + 10 });
+  if (!platformAvailability(env).searchVolume || !generated.length) return { list: generated.map((t) => ({ text: t, volume: null, pc: null, mobile: null, low: false, source: "auto" as const })), withVolume: false };
+  try {
+    const ideas = await fetchKeywordIdeas(generated, { NAVER_SEARCHAD_KEY: env.NAVER_SEARCHAD_KEY!, NAVER_SEARCHAD_SECRET: env.NAVER_SEARCHAD_SECRET!, NAVER_SEARCHAD_CUSTOMER: env.NAVER_SEARCHAD_CUSTOMER! });
+    return { list: rankCandidates(generated, ideas, region), withVolume: true };
+  } catch (e) {
+    console.log("[radar] keyword ideas failed", String(e).slice(0, 120));
+    return { list: generated.map((t) => ({ text: t, volume: null, pc: null, mobile: null, low: false, source: "auto" as const })), withVolume: false };
+  }
+}
+async function insertCandidates(db: D1Database, hospitalId: number, list: Candidate[], limit: number, activateTop: boolean, orderBase = 0) {
+  const stmts = list.map((c, i) => db.prepare(
+    "INSERT INTO keywords (hospital_id, text, source, is_active, sort_order, monthly_pc, monthly_mobile, volume_low, volume_updated_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(hospital_id, text) DO UPDATE SET sort_order = excluded.sort_order, monthly_pc = COALESCE(excluded.monthly_pc, keywords.monthly_pc), monthly_mobile = COALESCE(excluded.monthly_mobile, keywords.monthly_mobile), volume_low = excluded.volume_low, volume_updated_at = COALESCE(excluded.volume_updated_at, keywords.volume_updated_at)")
+    .bind(hospitalId, c.text, c.source, activateTop && i < limit ? 1 : 0, orderBase + i, c.pc, c.mobile, c.low ? 1 : 0, c.volume == null ? null : kstIso(), kstIso()));
+  for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
+}
+
 /* ── 온보딩 ── */
 app.get("/app/onboarding", async (c) => {
   const h = c.get("hospital");
@@ -50,8 +70,8 @@ app.get("/app/onboarding", async (c) => {
       naver_place_id: h.naver_place_id || "", website_url: h.website_url || "", fromHub: !!basic } }));
   }
   if (step === 2) {
-    const kws = (await c.env.DB.prepare("SELECT id, text, is_active, source FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string }[];
-    return c.html(Step2({ h: hv(h), keywords: kws, limit: limits.keywords }));
+    const kws = (await c.env.DB.prepare("SELECT id, text, is_active, source, monthly_pc, monthly_mobile, volume_low FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number }[];
+    return c.html(Step2({ h: hv(h), keywords: kws, limit: limits.keywords, withVolume: kws.some((k) => k.monthly_pc != null) }));
   }
   // step 3: 추천 후보 — 상위 키워드 3개 즉석 조회(가능한 네이버 경로로)
   const existing = (await c.env.DB.prepare("SELECT id, name FROM competitors WHERE hospital_id = ? AND is_active = 1").bind(h.id).all()).results as { id: number; name: string }[];
@@ -91,9 +111,8 @@ app.post("/app/onboarding/step1", async (c) => {
   const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM keywords WHERE hospital_id = ?").bind(h.id).first<{ n: number }>();
   if (!n?.n) {
     const limit = limitsOf(h.plan).keywords;
-    const gen = generateKeywords({ region, clinicType: str(b.clinic_type), treatments, limit: limit + 10 });
-    const stmts = gen.map((t, i) => c.env.DB.prepare("INSERT OR IGNORE INTO keywords (hospital_id, text, source, is_active, sort_order, created_at) VALUES (?,?,?,?,?,?)").bind(h.id, t, "auto", i < limit ? 1 : 0, i, kstIso()));
-    for (let i = 0; i < stmts.length; i += 40) await c.env.DB.batch(stmts.slice(i, i + 40));
+    const { list } = await buildCandidates(c.env, region, str(b.clinic_type) || null, treatments, limit);
+    await insertCandidates(c.env.DB, h.id, list, limit, true);
   }
   return c.redirect("/app/onboarding?step=2");
 });
@@ -220,7 +239,7 @@ app.get("/app", async (c) => {
 async function renderSettings(c: { env: AppEnv["Bindings"]; get: (k: "hospital") => HospitalRow }, flash?: string | null) {
   const h = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(c.get("hospital").id).first<HospitalRow>() as HospitalRow;
   const db = c.env.DB;
-  const keywords = (await db.prepare("SELECT id, text, is_active, source FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string }[];
+  const keywords = (await db.prepare("SELECT id, text, is_active, source, monthly_pc, monthly_mobile, volume_low FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number }[];
   const competitors = (await db.prepare("SELECT id, name, is_active, naver_place_id FROM competitors WHERE hospital_id = ? ORDER BY id").bind(h.id).all()).results as { id: number; name: string; is_active: number; naver_place_id: string | null }[];
   const settings = (await db.prepare("SELECT report_email_enabled, report_recipients FROM hospital_settings WHERE hospital_id = ?").bind(h.id).first<{ report_email_enabled: number; report_recipients: string }>()) || { report_email_enabled: 1, report_recipients: "[]" };
   const users = (await db.prepare("SELECT email, name, role FROM hospital_users WHERE hospital_id = ?").bind(h.id).all()).results as { email: string; name: string | null; role: string }[];
@@ -241,9 +260,9 @@ app.post("/app/settings/hospital", async (c) => {
 app.post("/app/settings/keywords", async (c) => {
   const h = c.get("hospital"); const b = await c.req.parseBody({ all: true });
   if (b.regen) {
-    const gen = generateKeywords({ region: regionOf(h), clinicType: h.clinic_type, treatments: parseJsonArr(h.key_treatments), limit: limitsOf(h.plan).keywords + 10 });
-    const stmts = gen.map((t, i) => c.env.DB.prepare("INSERT OR IGNORE INTO keywords (hospital_id, text, source, is_active, sort_order, created_at) VALUES (?,?,?,?,?,?)").bind(h.id, t, "auto", 0, 100 + i, kstIso()));
-    for (let i = 0; i < stmts.length; i += 40) await c.env.DB.batch(stmts.slice(i, i + 40));
+    const limit = limitsOf(h.plan).keywords;
+    const { list } = await buildCandidates(c.env, regionOf(h), h.clinic_type, parseJsonArr(h.key_treatments), limit);
+    await insertCandidates(c.env.DB, h.id, list, limit, false); // 새 후보는 OFF, 기존 ON/OFF 유지, 검색량·순서만 갱신
     return c.redirect("/app/settings?ok=1#keywords");
   }
   const over = await saveKeywords(c, h, b);

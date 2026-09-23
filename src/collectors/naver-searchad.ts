@@ -39,3 +39,27 @@ export async function fetchVolumes(keywords: string[], env: SearchAdEnv, fetchIm
   }
   return out;
 }
+
+/** 힌트 키워드 묶음으로 연관 키워드 전체(검색수 포함)를 모은다 — 키워드 후보 발굴용 */
+export type KeywordIdea = { keyword: string; pc: number | null; mobile: number | null; low: boolean };
+export async function fetchKeywordIdeas(seeds: string[], env: SearchAdEnv, fetchImpl: typeof fetch = fetch): Promise<KeywordIdea[]> {
+  const map = new Map<string, KeywordIdea>();
+  const hints = [...new Set(seeds.map((w) => w.replace(/\s+/g, "")).filter(Boolean))];
+  for (let i = 0; i < hints.length; i += 5) {
+    const chunk = hints.slice(i, i + 5);
+    const path = "/keywordstool";
+    const ts = Date.now().toString();
+    const res = await fetchImpl(`https://api.searchad.naver.com${path}?hintKeywords=${encodeURIComponent(chunk.join(","))}&showDetail=1`, {
+      headers: { "X-Timestamp": ts, "X-API-KEY": env.NAVER_SEARCHAD_KEY, "X-Customer": env.NAVER_SEARCHAD_CUSTOMER, "X-Signature": await sign(env.NAVER_SEARCHAD_SECRET, `${ts}.GET.${path}`) },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`SEARCHAD_HTTP_${res.status}`);
+    const j = (await res.json()) as { keywordList?: { relKeyword: string; monthlyPcQcCnt: unknown; monthlyMobileQcCnt: unknown }[] };
+    for (const k of j.keywordList || []) {
+      const pc = num(k.monthlyPcQcCnt), mo = num(k.monthlyMobileQcCnt);
+      if (!map.has(k.relKeyword)) map.set(k.relKeyword, { keyword: k.relKeyword, pc: pc.n, mobile: mo.n, low: pc.low || mo.low });
+    }
+    if (i + 5 < hints.length) await new Promise((r) => setTimeout(r, 400));
+  }
+  return [...map.values()];
+}
