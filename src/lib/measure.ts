@@ -13,6 +13,9 @@ import { collectGoogleSerp, collectGooglePlaces } from "../collectors/google";
 import { collectKakao } from "../collectors/kakao";
 import { fetchSignalScore } from "../collectors/signal";
 import { fetchVolumes } from "../collectors/naver-searchad";
+import { computeOpportunity, type KeywordRow } from "./opportunity";
+import { prescribe } from "./playbook";
+import { localityCandidates } from "./keywords";
 import type { HospitalRow } from "./session";
 
 export type RunKind = "first" | "weekly" | "manual";
@@ -225,6 +228,7 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
       catch (e) { errors.push(`signal ${String(e).slice(0, 60)}`); }
     }
     const { platforms, total } = await computeWeeklyScores(db, h.id, runId, week, signalScore);
+    try { await computeOpportunities(db, h.id, runId, week); } catch (e) { errors.push(`opportunity ${String(e).slice(0, 60)}`); }
     const status = blocked ? "blocked" : "completed";
     await db.prepare("UPDATE crawl_runs SET status = ?, finished_at = ?, error = ?, summary = ? WHERE id = ?")
       .bind(status, kstIso(), errors.length ? errors.join("; ").slice(0, 500) : null, JSON.stringify({ total, platforms, keywords: all.length - remaining, competitors: entities.length - 1 }), runId).run();
@@ -301,4 +305,49 @@ export async function evaluateAlerts(db: D1Database, hospitalId: number, week: s
       if (y && y.rank === 1 && (x.rank == null || x.rank > 5)) await add("warn", `rank_drop:${week}:${x.kid}`, `「${x.text}」 플레이스 1위에서 5위 밖으로 내려갔습니다.`, { from: 1, to: x.rank });
     }
   }
+}
+
+/** 검색 기회 집계: 플랫폼별(네이버 플레이스·구글·카카오) 수요 풀, 잡은 기회, 놓친 기회 순위, 경쟁사 기회 점유 */
+export async function computeOpportunities(db: D1Database, hospitalId: number, runId: number, week: string) {
+  const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, k.text, k.monthly_pc, k.monthly_mobile FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? AND o.platform IN ('naver_place','google_business','google_serp','kakao_map')").bind(runId).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; text: string; monthly_pc: number | null; monthly_mobile: number | null }[];
+  if (!obs.length) return;
+  const names: Record<string, string> = {};
+  for (const c of (await db.prepare("SELECT id, name FROM competitors WHERE hospital_id = ?").bind(hospitalId).all()).results as { id: number; name: string }[]) names[`c${c.id}`] = c.name;
+  const hasSerp = obs.some((o) => o.platform === "google_serp");
+  const byPlat: Record<string, Map<string, KeywordRow>> = {};
+  for (const o of obs) {
+    const p = o.platform === "naver_place" ? "naver_place" : o.platform === "kakao_map" ? "kakao" : o.platform === "google_serp" || (o.platform === "google_business" && !hasSerp) ? "google" : null;
+    if (!p) continue;
+    byPlat[p] ||= new Map();
+    let row = byPlat[p].get(o.text);
+    if (!row) { row = { keyword: o.text, volume: o.monthly_pc == null && o.monthly_mobile == null ? null : (o.monthly_pc ?? 0) + (o.monthly_mobile ?? 0), self: { rank: null, shown: false }, competitors: {} }; byPlat[p].set(o.text, row); }
+    if (o.entity_type === "self") row.self = { rank: o.rank, shown: !!o.shown };
+    else row.competitors[`c${o.entity_id}`] = { rank: o.rank, shown: !!o.shown, name: names[`c${o.entity_id}`] || "경쟁사" };
+  }
+  // 처방 재료: 통합검색 상세(섹션·언급), 평판(리뷰 수), 지역명
+  const hosp = await db.prepare("SELECT region_sido, region_sigungu, region_dong FROM hospitals WHERE id = ?").bind(hospitalId).first<{ region_sido: string | null; region_sigungu: string | null; region_dong: string | null }>();
+  const locs = localityCandidates([hosp?.region_sido, hosp?.region_sigungu, hosp?.region_dong].filter(Boolean).join(" "));
+  const serp = (await db.prepare("SELECT k.text, o.detail FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? AND o.platform = 'naver_serp' AND o.entity_type = 'self'").bind(runId).all()).results as { text: string; detail: string }[];
+  const serpMap = new Map(serp.map((r) => [r.text, (() => { try { return JSON.parse(r.detail || "{}"); } catch { return {}; } })() as Record<string, unknown>]));
+  const rep = (await db.prepare("SELECT entity_type, entity_id, review_count, blog_review_count FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place' AND snapshot_date = (SELECT MAX(snapshot_date) FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place')").bind(hospitalId, hospitalId).all()).results as { entity_type: string; entity_id: number | null; review_count: number | null; blog_review_count: number | null }[];
+  const repOf = (key: string) => rep.find((r) => (r.entity_type === "self" ? "self" : `c${r.entity_id}`) === key);
+  const termOf = (kw: string) => { let t = kw; for (const l of locs) t = t.replace(l, ""); return t.replace(/\s+/g, " ").trim() || kw; };
+  const stmts = [];
+  for (const [p, m] of Object.entries(byPlat)) {
+    const op = computeOpportunity(p, [...m.values()]);
+    if (!op.pool) continue;
+    const lost = op.lost.slice(0, 20).map((l) => {
+      if (p !== "naver_place") return l;
+      const row = m.get(l.keyword)!;
+      const d = serpMap.get(l.keyword) || {};
+      const sections = (d.sections as Record<string, boolean>) || {};
+      const above = Object.entries(row.competitors).filter(([, c]) => c.rank != null && (row.self.rank == null || (c.rank as number) < row.self.rank)).sort((a, b) => (a[1].rank as number) - (b[1].rank as number)).map(([k, c]) => ({ name: c.name, rank: c.rank as number, visitorReviews: repOf(k)?.review_count ?? null, blogReviews: repOf(k)?.blog_review_count ?? null }));
+      const actions = prescribe({ keyword: l.keyword, term: termOf(l.keyword), placeRank: row.self.rank, placeAd: !!d.placeAd, mentions: Number(d.mentions || 0), blogSection: !!sections.blog, cafeSection: !!sections.cafe, aib: !!d.aib,
+        googleRank: byPlat.google?.get(l.keyword)?.self.rank, kakaoRank: byPlat.kakao?.get(l.keyword)?.self.rank, above, selfVisitorReviews: repOf("self")?.review_count ?? null, selfBlogReviews: repOf("self")?.blog_review_count ?? null });
+      return { ...l, actions };
+    });
+    stmts.push(db.prepare("INSERT OR REPLACE INTO weekly_opportunity (hospital_id, week_start, platform, pool, captured, coverage, detail, created_at) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(hospitalId, week, p, op.pool, op.captured, op.coverage ?? 0, JSON.stringify({ lost, competitors: op.competitors }), kstIso()));
+  }
+  if (stmts.length) await db.batch(stmts);
 }

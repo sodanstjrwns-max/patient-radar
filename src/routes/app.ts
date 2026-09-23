@@ -187,7 +187,7 @@ app.get("/app", async (c) => {
   const weeks = (await db.prepare("SELECT DISTINCT week_start FROM weekly_scores WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 2").bind(h.id).all()).results as { week_start: string }[];
   const week = weeks[0]?.week_start ?? null;
   const prevWeek = weeks[1]?.week_start ?? null;
-  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false };
+  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, opportunity: null };
   if (week) {
     const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
     const prev = prevWeek ? ((await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; score: number }[]) : [];
@@ -228,6 +228,21 @@ app.get("/app", async (c) => {
       const groups = new Map<string, typeof rep>();
       for (const r of rep) { const k = `${r.entity_type === "self" ? "self" : "c" + r.entity_id}|${r.platform}`; (groups.get(k) || groups.set(k, []).get(k)!).push(r); }
       for (const [k, list] of groups) { const [ent, plat] = k.split("|"); if (ent !== "self" && !names[ent]) continue; d.reputation.push({ entity: ent === "self" ? h.name : names[ent], platform: PLATFORM_LABEL[plat === "google_business" ? "google" : plat] || plat, points: dates.map((dt) => { const p = list.find((x) => x.snapshot_date === dt); return { date: dt, reviews: p?.review_count ?? null, blog: p?.blog_review_count ?? null, rating: p?.rating ?? null }; }) }); }
+    }
+    // 검색 기회
+    const opp = (await db.prepare("SELECT platform, pool, captured, coverage, detail FROM weekly_opportunity WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; pool: number; captured: number; coverage: number; detail: string }[];
+    if (opp.length) {
+      const prevOpp = prevWeek ? ((await db.prepare("SELECT platform, coverage FROM weekly_opportunity WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; coverage: number }[]) : [];
+      const label: Record<string, string> = { naver_place: "네이버 플레이스", google: "구글", kakao: "카카오맵" };
+      const np = opp.find((o) => o.platform === "naver_place") || opp[0];
+      const det = JSON.parse(np.detail || "{}") as { lost?: DashboardData["opportunity"] extends infer T ? T extends { lost: infer L } ? L : never : never; competitors?: Record<string, { name: string; captured: number; coverage: number | null }> };
+      d.opportunity = {
+        pool: np.pool,
+        platforms: ["naver_place", "google", "kakao"].filter((k) => opp.some((o) => o.platform === k)).map((k) => { const o = opp.find((x) => x.platform === k)!; return { key: k, label: label[k], captured: o.captured, coverage: o.coverage, prev: prevOpp.find((x) => x.platform === k)?.coverage ?? null }; }),
+        lost: (det.lost || []).slice(0, 8),
+        competitors: Object.values(det.competitors || {}).sort((a, b) => b.captured - a.captured),
+        selfCaptured: np.captured,
+      };
     }
     d.alerts = (await db.prepare("SELECT severity, message, created_at FROM alerts WHERE hospital_id = ? ORDER BY id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["alerts"];
     d.runs = (await db.prepare("SELECT run_date, status, kind, error FROM crawl_runs WHERE hospital_id = ? ORDER BY run_date DESC, id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["runs"];

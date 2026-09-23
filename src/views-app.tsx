@@ -151,12 +151,15 @@ export function FirstRun({ h, ready, reasons, result, lines }: { h: { name: stri
 }
 
 /* ───────── 대시보드 ───────── */
+export type LostItem = { keyword: string; volume: number; rank: number | null; lost: number; gainTop3: number; above: string[]; actions?: string[] };
 export type DashboardData = {
   week: string | null;
-  total: { score: number | null; prev: number | null; sov: number | null; weighted: number | null; series: { week: string; score: number }[] };
+  total: { score: number | null; prev: number | null; sov: number | null; weighted: number | null; series: { week: string; score: number }[]
+};
   platforms: { key: string; label: string; score: number | null; prev: number | null; sov: number | null; state: "ok" | "unmeasured" | "needs_key" | "plan" }[];
   matrix: { keyword: string; volume: number | null; volumeLow?: boolean; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
   hasVolume: boolean;
+  opportunity: { pool: number; platforms: { key: string; label: string; captured: number; coverage: number | null; prev: number | null }[]; lost: LostItem[]; competitors: { name: string; captured: number; coverage: number | null }[]; selfCaptured: number } | null;
   matrixPlatforms: { key: string; label: string }[];
   competitors: { id: number; name: string; score: number | null }[];
   selfScore: number | null;
@@ -182,6 +185,34 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
         <section class="card"><h1>아직 측정 결과가 없습니다</h1><p class="muted">첫 측정을 실행하면 이 자리에 점수가 표시됩니다.</p><a class="button button-primary" href="/app/first-run">첫 측정 →</a></section>
       ) : (
         <>
+          {d.opportunity ? (
+            <section class="card opp">
+              <div class="card-head"><h2>검색 기회 <small class="muted">이 키워드들을 찾는 사람 중 우리가 보인 기회</small></h2></div>
+              <div class="opp-top">
+                <div><p class="eyebrow">월 검색 수요</p><div class="score-hero"><span class="score-big">{d.opportunity.pool.toLocaleString()}</span><span class="score-cap">회 / 월 · 활성 키워드 합계(네이버)</span></div></div>
+                <div class="opp-bars">{d.opportunity.platforms.map((p) => (
+                  <div class="bar-row"><span class="bar-label">{p.label}</span><span class={"bar " + (p.key === "naver_place" ? "self" : "")} style={`width:${Math.max(2, Math.round((p.coverage ?? 0) * 100))}%`} /><span class="bar-val">{pct(p.coverage)} <small class="muted">{p.captured.toLocaleString()}회</small>{p.prev != null && p.coverage != null ? <small class={"delta " + (p.coverage - p.prev > 0.005 ? "up" : p.coverage - p.prev < -0.005 ? "down" : "flat")}> {p.coverage - p.prev >= 0 ? "▲" : "▼"}{Math.abs(Math.round((p.coverage - p.prev) * 100))}%p</small> : null}</span></div>
+                ))}</div>
+              </div>
+              <div class="grid-2">
+                <div>
+                  <h3>놓친 기회 순위 <small class="muted">네이버 플레이스 · 검색수 × (1 − 노출 확률)</small></h3>
+                  <div class="table-scroll"><table class="matrix"><thead><tr><th>키워드</th><th>월 검색</th><th>우리</th><th>놓침</th><th>3위 진입 시</th><th>위에 있는 병원</th></tr></thead>
+                    <tbody>{d.opportunity.lost.map((l) => <tr><td class="kw">{l.keyword}</td><td>{l.volume.toLocaleString()}</td><td>{rankCell(l.rank, false)}</td><td><b>{l.lost.toLocaleString()}</b></td><td class="muted">{l.gainTop3 > 0 ? "+" + l.gainTop3.toLocaleString() : "—"}</td><td class="small muted">{l.above.length ? l.above.join(" · ") : (l.rank == null ? "경쟁사도 없음" : "—")}</td></tr>)}</tbody></table></div>
+                  <h3>이렇게 하면 <small class="muted">놓친 기회 상위 키워드별 · 실측 신호에서 나온 처방</small></h3>
+                  <ul class="plain actions">{d.opportunity.lost.slice(0, 5).filter((l) => l.actions && l.actions.length).map((l) => <li><b>{l.keyword}</b> <small class="muted">월 {l.volume.toLocaleString()} · {l.rank == null ? "미노출" : l.rank + "위"}</small><ul>{(l.actions || []).map((a) => <li>{a}</li>)}</ul></li>)}</ul>
+                </div>
+                <div>
+                  <h3>누가 이 수요를 가져가나 <small class="muted">네이버 플레이스 기회 점유</small></h3>
+                  <div class="bars">
+                    <div class="bar-row"><span class="bar-label">우리 병원</span><span class="bar self" style={`width:${Math.max(2, Math.round((d.opportunity.selfCaptured / Math.max(1, d.opportunity.pool)) * 100))}%`} /><span class="bar-val">{d.opportunity.selfCaptured.toLocaleString()}</span></div>
+                    {d.opportunity.competitors.map((c) => <div class="bar-row"><span class="bar-label">{c.name}</span><span class="bar" style={`width:${Math.max(2, Math.round((c.coverage ?? 0) * 100))}%`} /><span class="bar-val">{c.captured.toLocaleString()}</span></div>)}
+                  </div>
+                  <p class="muted small">막대 = 월 검색 수요 대비 잡은 기회. 같은 키워드에서 여러 병원이 동시에 보이므로 합이 100%를 넘을 수 있습니다.</p>
+                </div>
+              </div>
+            </section>
+          ) : null}
           <section class="grid-2">
             <div class="card score-card">
               <p class="eyebrow">온라인 가시성 점수 · {d.week} 주</p>
@@ -227,6 +258,7 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
               <li><b>온라인 가시성 점수</b> — 플랫폼 점수의 가중 평균. 가중치 네이버 통합검색 35 · 네이버 플레이스 25 · 구글 20 · 카카오맵 10 · AI(시그널) 10. 키가 없거나 플랜에 없어 측정 안 된 플랫폼은 분모에서 뺍니다(0점으로 넣지 않음).</li>
               <li><b>수요 가중 점수</b> — 키워드 점수에 그 키워드의 월 검색수를 곱해 평균. 많이 찾는 키워드에서 보이는지를 봅니다. 검색수가 없는 키워드는 제외.</li>
               <li><b>점유율(SOV)</b> — 같은 키워드 세트에서 우리 병원 점수 합 ÷ (우리 + 경쟁 병원 점수 합). 경쟁 병원을 등록해야 계산됩니다. 상단 점유율은 네이버 플레이스 기준.</li>
+              <li><b>검색 기회</b> — 키워드 월 검색수 × 순위별 노출 확률(1위 100% · 2위 80% · 3위 65% · 4위 45% · 5위 35% · 6~10위 15% · 다른 섹션만 10% · 미노출 0%)의 합. "몇 명이 우리를 볼 기회가 있었나"의 추정치이지 클릭 수가 아닙니다. 놓친 기회 = 검색수 − 잡은 기회, "3위 진입 시"는 3위(65%)에 올랐을 때 늘어나는 기회.</li>
               <li><b>미노출도 기록</b> — 안 보이는 것도 데이터입니다. 순위 없음은 「—」로 남기고, 다음 주와 비교합니다.</li>
             </ul>
           </section>
@@ -339,6 +371,11 @@ export function ReportView({ h, r }: { h: { name: string; plan: string }; r: Rep
         <p class="eyebrow">WEEKLY REPORT · {r.week}</p>
         <h1>{r.hospital}</h1>
         <div class="score-hero"><span class="score-big">{fmt(r.total, 1)}</span><span class="score-cap">/ 100</span>{delta(r.total, r.prevTotal)}</div>
+        {r.opportunity ? (<>
+          <h2>검색 기회 <small class="muted">네이버 플레이스</small></h2>
+          <p>월 <b>{r.opportunity.pool.toLocaleString()}</b>회 검색 중 우리가 보인 기회 <b>{r.opportunity.captured.toLocaleString()}</b>회 ({pct(r.opportunity.coverage)}{r.opportunity.prevCoverage != null ? <span class="muted">, 지난주 {pct(r.opportunity.prevCoverage)}</span> : null})</p>
+          <table class="matrix"><thead><tr><th>놓친 기회</th><th>월 검색</th><th>우리</th><th>놓침</th><th>3위 진입 시</th></tr></thead><tbody>{r.opportunity.lost.map((x) => <tr><td>{x.keyword}</td><td>{x.volume.toLocaleString()}</td><td>{rankCell(x.rank, false)}</td><td><b>{x.lost.toLocaleString()}</b></td><td class="muted">{x.gainTop3 > 0 ? "+" + x.gainTop3.toLocaleString() : "—"}</td></tr>)}</tbody></table>
+        </>) : null}
         <h2>플랫폼별</h2>
         <table class="matrix"><tbody>{r.platforms.map((p) => <tr><td>{p.label}</td><td><b>{fmt(p.score, 1)}</b></td><td>{delta(p.score, p.prev)}</td><td class="muted">{p.sov != null ? "점유율 " + pct(p.sov) : ""}</td></tr>)}</tbody></table>
         {r.up.length ? <><h2>올라간 키워드</h2><ul class="plain">{r.up.map((k) => <li>{k.keyword} <small class="muted">{k.platform}</small> {k.from ?? "—"}위 → <b>{k.to ?? "—"}위</b></li>)}</ul></> : null}

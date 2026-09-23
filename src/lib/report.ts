@@ -11,6 +11,7 @@ export type ReportContent = {
   alerts: { severity: string; message: string }[];
   notes: string[];
   nextRun: string;
+  opportunity?: { pool: number; captured: number; coverage: number | null; prevCoverage: number | null; lost: { keyword: string; volume: number; rank: number | null; lost: number; gainTop3: number; above: string[]; actions?: string[] }[]; competitors: { name: string; captured: number }[] } | null;
 };
 export const PLATFORM_LABEL: Record<string, string> = { naver_serp: "네이버 통합검색", naver_place: "네이버 플레이스", google: "구글", kakao: "카카오맵", signal_ai: "AI (시그널)", total: "온라인 가시성" };
 
@@ -66,8 +67,16 @@ export async function buildWeeklyReport(db: D1Database, hospitalId: number, week
   if (total != null && prevTotal != null && total - prevTotal >= 10) notes.push("가시성이 크게 올랐습니다. 이번 주에 바뀐 것(리뷰·콘텐츠·광고)을 기록해 두세요.");
   if (down.length > up.length) notes.push(`내려간 키워드가 올라간 키워드보다 많습니다 (${down.length} vs ${up.length}).`);
   if (!prev.length) notes.push("첫 주 측정입니다. 증감과 추세는 다음 주부터 표시됩니다.");
+  const oppRow = await db.prepare("SELECT pool, captured, coverage, detail FROM weekly_opportunity WHERE hospital_id = ? AND week_start = ? AND platform = 'naver_place'").bind(hospitalId, week).first<{ pool: number; captured: number; coverage: number; detail: string }>();
+  const oppPrev = await db.prepare("SELECT coverage FROM weekly_opportunity WHERE hospital_id = ? AND week_start = ? AND platform = 'naver_place'").bind(hospitalId, pw).first<{ coverage: number }>();
+  let opportunity: ReportContent["opportunity"] = null;
+  if (oppRow) {
+    const det = JSON.parse(oppRow.detail || "{}") as { lost?: ReportContent["opportunity"] extends infer T ? T extends { lost: infer L } ? L : never : never; competitors?: Record<string, { name: string; captured: number }> };
+    opportunity = { pool: oppRow.pool, captured: oppRow.captured, coverage: oppRow.coverage, prevCoverage: oppPrev?.coverage ?? null, lost: (det.lost || []).slice(0, 5), competitors: Object.values(det.competitors || {}).sort((a, b) => b.captured - a.captured) };
+    if (opportunity.lost[0]) notes.unshift(`이번 주 가장 큰 기회는 「${opportunity.lost[0].keyword}」(월 ${opportunity.lost[0].volume.toLocaleString()}회, 현재 ${opportunity.lost[0].rank ?? "미노출"}${opportunity.lost[0].rank ? "위" : ""}) — 3위 안에 들면 월 약 ${opportunity.lost[0].gainTop3.toLocaleString()}회 더 보입니다.`);
+  }
   const next = new Date(week + "T00:00:00Z"); next.setUTCDate(next.getUTCDate() + 7);
-  return { week, hospital: h.name, total, prevTotal, weighted: cur.find((r) => r.platform === "total")?.weighted_score ?? null, delta: total != null && prevTotal != null ? Math.round((total - prevTotal) * 10) / 10 : null, platforms, up: up.slice(0, 3), down: down.slice(0, 3), reputation, alerts, notes, nextRun: next.toISOString().slice(0, 10) };
+  return { week, hospital: h.name, opportunity, total, prevTotal, weighted: cur.find((r) => r.platform === "total")?.weighted_score ?? null, delta: total != null && prevTotal != null ? Math.round((total - prevTotal) * 10) / 10 : null, platforms, up: up.slice(0, 3), down: down.slice(0, 3), reputation, alerts, notes, nextRun: next.toISOString().slice(0, 10) };
 }
 
 export function reportToText(r: ReportContent): string {
@@ -75,6 +84,14 @@ export function reportToText(r: ReportContent): string {
   l.push(`${r.hospital} 주간 가시성 리포트 (${r.week} 주)`);
   l.push(`온라인 가시성 점수: ${r.total ?? "—"}${r.delta != null ? ` (${r.delta >= 0 ? "+" : ""}${r.delta})` : ""}`);
   if (r.weighted != null) l.push(`수요 가중 점수(검색량 반영): ${r.weighted}`);
+  if (r.opportunity) {
+    const o = r.opportunity;
+    l.push(""); l.push(`검색 기회 (네이버 플레이스): 월 ${o.pool.toLocaleString()}회 검색 중 우리가 보인 기회 ${o.captured.toLocaleString()}회 (${o.coverage != null ? Math.round(o.coverage * 100) + "%" : "—"}${o.prevCoverage != null && o.coverage != null ? `, 지난주 ${Math.round(o.prevCoverage * 100)}%` : ""})`);
+    l.push("놓친 기회 순위");
+    for (const x of o.lost) l.push(`- ${x.keyword} · 월 ${x.volume.toLocaleString()}회 · 우리 ${x.rank ?? "미노출"}${x.rank ? "위" : ""} · 놓침 ${x.lost.toLocaleString()}회${x.gainTop3 > 0 ? ` · 3위 진입 시 +${x.gainTop3.toLocaleString()}` : ""}${x.above.length ? ` · 위: ${x.above.join(", ")}` : ""}`);
+    for (const x of o.lost.slice(0, 3)) if (x.actions?.length) { l.push(`  → ${x.keyword}: ${x.actions[0]}`); }
+    if (o.competitors.length) l.push("경쟁 병원이 잡은 기회: " + o.competitors.map((c) => `${c.name} ${c.captured.toLocaleString()}회`).join(" · "));
+  }
   l.push("");
   l.push("플랫폼별");
   for (const p of r.platforms) l.push(`- ${p.label}: ${p.score}${p.prev != null ? ` (지난주 ${p.prev})` : ""}${p.sov != null ? ` · 점유율 ${Math.round(p.sov * 100)}%` : ""}`);
