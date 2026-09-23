@@ -46,10 +46,17 @@ export function generateKeywords(opts: { region: string | null; clinicType: stri
   return out.slice(0, Math.max(0, opts.limit));
 }
 
-/** 키워드 안의 동·읍·면 토큰 중 우리 지역 목록에 없는 것이 있으면 true */
+/** 키워드 안의 동·읍·면 토큰 중 우리 지역 목록에 없는 것이 있으면 true (예: 불당동 병원에게 "천안신부동치과") */
 export function hasOtherDong(squashed: string, ourLocalities: string[]): boolean {
-  const tokens = squashed.match(/[가-힣]{1,4}?(동|읍|면)(?=치과|병원|의원|[가-힣]|$)/g) || [];
-  return tokens.some((t) => !ourLocalities.some((l) => l.includes(t) || t.includes(l)));
+  const cities = ourLocalities.filter((l) => !/(동|읍|면)$/.test(l));
+  const ourDongs = ourLocalities.filter((l) => /(동|읍|면)$/.test(l));
+  const tokens = squashed.match(/[가-힣]{1,5}(동|읍|면)/g) || [];
+  return tokens.some((raw) => {
+    let t = raw;
+    for (const c of cities) if (t.startsWith(c)) t = t.slice(c.length); // "천안신부동" → "신부동"
+    if (t.length < 2) return false;
+    return !ourDongs.some((d) => d === t || d.endsWith(t) || t.endsWith(d));
+  });
 }
 
 export type Candidate = { text: string; volume: number | null; pc: number | null; mobile: number | null; low: boolean; source: "auto" | "related" };
