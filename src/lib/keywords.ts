@@ -46,6 +46,12 @@ export function generateKeywords(opts: { region: string | null; clinicType: stri
   return out.slice(0, Math.max(0, opts.limit));
 }
 
+/** 키워드 안의 동·읍·면 토큰 중 우리 지역 목록에 없는 것이 있으면 true */
+export function hasOtherDong(squashed: string, ourLocalities: string[]): boolean {
+  const tokens = squashed.match(/[가-힣]{1,4}?(동|읍|면)(?=치과|병원|의원|[가-힣]|$)/g) || [];
+  return tokens.some((t) => !ourLocalities.some((l) => l.includes(t) || t.includes(l)));
+}
+
 export type Candidate = { text: string; volume: number | null; pc: number | null; mobile: number | null; low: boolean; source: "auto" | "related" };
 const squash = (s: string) => s.replace(/\s+/g, "");
 
@@ -69,6 +75,7 @@ export function rankCandidates(generated: string[], ideas: { keyword: string; pc
     const vol = (i.pc ?? 0) + (i.mobile ?? 0);
     if (vol < (opts.minVolume ?? 100)) continue;
     if (bad.some((b) => k.includes(b))) continue; // 비교·가격형 키워드는 광고성 노출이라 순위 측정 대상에서 뺀다
+    if (hasOtherDong(k, locs)) continue; // 다른 동·읍·면 이름이 들어간 키워드(천안신부동치과 등)는 우리 병원 상권이 아니다
     byKey.set(k, { text: i.keyword, volume: vol, pc: i.pc, mobile: i.mobile, low: i.low, source: "related" });
     if (++related >= (opts.maxRelated ?? 15)) break;
   }
