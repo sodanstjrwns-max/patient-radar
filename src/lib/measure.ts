@@ -233,8 +233,10 @@ export async function computeWeeklyScores(db: D1Database, hospitalId: number, ru
   const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, o.detail, k.text FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ?").bind(runId).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; text: string }[];
   const compKeys = [...new Set(obs.filter((o) => o.entity_type === "competitor").map((o) => `c${o.entity_id}`))];
   const rows: Record<string, KeywordObs[]> = {};
+  // 구글 자연검색(CSE)이 없으면 비즈니스 프로필(Places) 순위를 구글 점수로 쓴다 (2026-09-23: CSE 전체 웹 검색 지원 중단)
+  const hasSerp = obs.some((o) => o.platform === "google_serp");
   for (const o of obs) {
-    const sp = SCORE_PLATFORM[o.platform];
+    const sp = o.platform === "google_business" && !hasSerp ? "google" : SCORE_PLATFORM[o.platform];
     if (!sp) continue;
     rows[sp] ||= [];
     let row = rows[sp].find((r) => r.keyword === o.text);

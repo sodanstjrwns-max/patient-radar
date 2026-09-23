@@ -142,9 +142,9 @@ function readiness(env: AppEnv["Bindings"], h: HospitalRow) {
   const u = usablePlatforms(env, h);
   const reasons: string[] = [];
   if (!u.naver) reasons.push("네이버: 공식 검색 API 키(NAVER_CLIENT_ID/SECRET) 또는 HTML 모드가 설정되지 않았습니다.");
-  if (!u.google) reasons.push("구글: Custom Search 키가 없거나 플랜에 포함되지 않습니다.");
+  if (!u.google && !u.googlePlaces) reasons.push("구글: Places API 키가 없거나 플랜에 포함되지 않습니다.");
   if (!u.kakao) reasons.push("카카오맵: 로컬 REST 키가 없거나 플랜에 포함되지 않습니다.");
-  return { ready: u.naver || u.google || u.kakao, reasons };
+  return { ready: u.naver || u.google || u.googlePlaces || u.kakao, reasons };
 }
 app.get("/app/first-run", (c) => { const h = c.get("hospital"); const r = readiness(c.env, h); return c.html(FirstRun({ h: hv(h), ready: r.ready, reasons: r.reasons })); });
 app.post("/app/first-run", async (c) => {
@@ -178,7 +178,7 @@ app.get("/app", async (c) => {
     const state = (key: string): "ok" | "unmeasured" | "needs_key" | "plan" => {
       if (cur.some((r) => r.platform === key)) return "ok";
       if (key === "naver_serp" || key === "naver_place") return limits.platforms.includes("naver") ? (u.naver ? "unmeasured" : "needs_key") : "plan";
-      if (key === "google") return limits.platforms.includes("google") ? (u.google ? "unmeasured" : "needs_key") : "plan";
+      if (key === "google") return limits.platforms.includes("google") ? (u.google || u.googlePlaces ? "unmeasured" : "needs_key") : "plan";
       if (key === "kakao") return limits.platforms.includes("kakao") ? (u.kakao ? "unmeasured" : "needs_key") : "plan";
       return limits.platforms.includes("signal") ? (u.signal ? "unmeasured" : "needs_key") : "plan";
     };
@@ -194,7 +194,7 @@ app.get("/app", async (c) => {
       for (const o of obs) {
         let row = byKw.get(o.text); if (!row) { row = { keyword: o.text, cells: {}, competitors: {} }; byKw.set(o.text, row); }
         const det = (() => { try { return JSON.parse(o.detail || "{}"); } catch { return {}; } })();
-        if (o.entity_type === "self") { row.cells[o.platform] = { rank: o.rank, shown: !!o.shown, ad: !!det.placeAd }; if (o.platform === "naver_place" || o.platform === "google_serp" || o.platform === "kakao_map") selfScores.push(obsScore(o.platform, o.shown, o.rank, det)); }
+        if (o.entity_type === "self") { row.cells[o.platform] = { rank: o.rank, shown: !!o.shown, ad: !!det.placeAd }; if (o.platform === "naver_place" || o.platform === "google_serp" || o.platform === "google_business" || o.platform === "kakao_map") selfScores.push(obsScore(o.platform, o.shown, o.rank, det)); }
         else if (o.platform === "naver_place") { row.competitors[`c${o.entity_id}`] = { rank: o.rank, shown: !!o.shown }; (compScore[`c${o.entity_id}`] ||= []).push(obsScore(o.platform, o.shown, o.rank, det)); }
       }
       d.matrix = [...byKw.values()];

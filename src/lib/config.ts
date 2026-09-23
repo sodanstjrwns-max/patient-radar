@@ -44,7 +44,7 @@ export function platformAvailability(env: Bindings) {
   return {
     naver: naverApi || naverHtml,
     naverMode: naverHtml ? ("html" as const) : naverApi ? ("api" as const) : null,
-    google: !!(env.GOOGLE_CSE_KEY && env.GOOGLE_CSE_CX),
+    google: !!(env.GOOGLE_CSE_KEY && env.GOOGLE_CSE_CX), // CSE 전체 웹 검색은 2026 지원 중단 — 사실상 항상 false
     googlePlaces: !!env.GOOGLE_PLACES_KEY,
     kakao: !!env.KAKAO_REST_KEY,
     signal: !!(env.SIGNAL_API_URL && env.SIGNAL_API_KEY),
