@@ -152,9 +152,10 @@ export function FirstRun({ h, ready, reasons, result, lines }: { h: { name: stri
 /* ───────── 대시보드 ───────── */
 export type DashboardData = {
   week: string | null;
-  total: { score: number | null; prev: number | null; sov: number | null; series: { week: string; score: number }[] };
+  total: { score: number | null; prev: number | null; sov: number | null; weighted: number | null; series: { week: string; score: number }[] };
   platforms: { key: string; label: string; score: number | null; prev: number | null; sov: number | null; state: "ok" | "unmeasured" | "needs_key" | "plan" }[];
-  matrix: { keyword: string; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
+  matrix: { keyword: string; volume: number | null; volumeLow?: boolean; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
+  hasVolume: boolean;
   matrixPlatforms: { key: string; label: string }[];
   competitors: { id: number; name: string; score: number | null }[];
   selfScore: number | null;
@@ -185,6 +186,7 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
               <p class="eyebrow">온라인 가시성 점수 · {d.week} 주</p>
               <div class="score-hero"><span class="score-big">{fmt(d.total.score, 1)}</span><span class="score-cap">/ 100</span>{delta(d.total.score, d.total.prev)}</div>
               <div class="score-sub"><Spark series={d.total.series} /><span class="muted small">{d.total.prev == null ? "증감·추세는 다음 주부터 표시" : "전주 대비"}</span></div>
+              {d.total.weighted != null ? <p class="weighted">수요 가중 <b>{fmt(d.total.weighted, 1)}</b> <span class="muted small">· 검색량이 큰 키워드에 비중을 둔 점수</span></p> : null}
             </div>
             <div class="card">
               <p class="eyebrow">점유율 (SOV)</p>
@@ -205,16 +207,27 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
           <section class="card">
             <div class="card-head"><h2>키워드 매트릭스</h2><div class="row"><a href={d.compare ? "/app" : "/app?compare=1"} class="button button-small button-outline">{d.compare ? "우리 병원 보기" : "경쟁사와 비교"}</a></div></div>
             <div class="table-scroll"><table class="matrix">
-              <thead><tr><th>키워드</th>{d.compare ? [<th>우리 병원</th>, ...d.competitors.map((c) => <th>{c.name}</th>)] : d.matrixPlatforms.map((p) => <th>{p.label}</th>)}</tr></thead>
+              <thead><tr><th>키워드</th>{d.hasVolume ? <th>월 검색수</th> : null}{d.compare ? [<th>우리 병원</th>, ...d.competitors.map((c) => <th>{c.name}</th>)] : d.matrixPlatforms.map((p) => <th>{p.label}</th>)}</tr></thead>
               <tbody>{d.matrix.map((r) => (
-                <tr><td class="kw">{r.keyword}</td>
+                <tr><td class="kw">{r.keyword}</td>{d.hasVolume ? <td class="vol">{r.volume == null ? <span class="muted">—</span> : <>{r.volume.toLocaleString()}{r.volumeLow ? <small class="muted"> ↓</small> : null}</>}</td> : null}
                   {d.compare
                     ? [<td>{rankCell(r.cells.naver_place?.rank, r.cells.naver_place?.shown, r.cells.naver_place?.ad)}</td>, ...d.competitors.map((c) => <td>{rankCell(r.competitors[`c${c.id}`]?.rank, r.competitors[`c${c.id}`]?.shown)}</td>)]
                     : d.matrixPlatforms.map((p) => <td>{r.cells[p.key] ? rankCell(r.cells[p.key].rank, r.cells[p.key].shown, r.cells[p.key].ad) : <span class="muted">—</span>}</td>)}
                 </tr>
               ))}</tbody>
             </table></div>
-            <p class="muted small">{d.compare ? "네이버 플레이스 순위 기준" : "「노출」= 순위 목록엔 없지만 블로그·카페 등 다른 섹션에 이름이 나옴 · 「—」= 미노출"}</p>
+            <p class="muted small">{d.compare ? "네이버 플레이스 순위 기준" : "「노출」= 순위 목록엔 없지만 블로그·카페 등 다른 섹션에 이름이 나옴 · 「—」= 미노출"}{d.hasVolume ? " · 월 검색수 = 네이버 최근 30일 PC+모바일(검색광고 키워드도구), ↓ = 10 미만 포함 추정" : ""}</p>
+          </section>
+          <section class="card defs">
+            <h2>점수와 점유율은 이렇게 계산합니다</h2>
+            <ul class="plain">
+              <li><b>키워드 점수</b> — 플랫폼에서 우리 병원의 자연 순위(광고 제외)를 점수로 바꿉니다. 1위 100 · 2~3위 80 · 4~5위 60 · 6~10위 30 · 그 밖 10 · 순위엔 없지만 블로그·카페 등에 이름이 보이면 15 · 미노출 0.</li>
+              <li><b>플랫폼 점수</b> — 측정한 키워드의 키워드 점수 평균(0~100).</li>
+              <li><b>온라인 가시성 점수</b> — 플랫폼 점수의 가중 평균. 가중치 네이버 통합검색 35 · 네이버 플레이스 25 · 구글 20 · 카카오맵 10 · AI(시그널) 10. 키가 없거나 플랜에 없어 측정 안 된 플랫폼은 분모에서 뺍니다(0점으로 넣지 않음).</li>
+              <li><b>수요 가중 점수</b> — 키워드 점수에 그 키워드의 월 검색수를 곱해 평균. 많이 찾는 키워드에서 보이는지를 봅니다. 검색수가 없는 키워드는 제외.</li>
+              <li><b>점유율(SOV)</b> — 같은 키워드 세트에서 우리 병원 점수 합 ÷ (우리 + 경쟁 병원 점수 합). 경쟁 병원을 등록해야 계산됩니다. 상단 점유율은 네이버 플레이스 기준.</li>
+              <li><b>미노출도 기록</b> — 안 보이는 것도 데이터입니다. 순위 없음은 「—」로 남기고, 다음 주와 비교합니다.</li>
+            </ul>
           </section>
           {d.competitors.length ? (
             <section class="card">

@@ -3,7 +3,7 @@ import type { Bindings } from "./config";
 import { kstIso } from "./time";
 
 export type ReportContent = {
-  week: string; hospital: string; total: number | null; prevTotal: number | null; delta: number | null;
+  week: string; hospital: string; total: number | null; prevTotal: number | null; delta: number | null; weighted: number | null;
   platforms: { platform: string; label: string; score: number | null; prev: number | null; sov: number | null }[];
   up: { keyword: string; platform: string; from: number | null; to: number | null }[];
   down: { keyword: string; platform: string; from: number | null; to: number | null }[];
@@ -22,7 +22,7 @@ export async function buildWeeklyReport(db: D1Database, hospitalId: number, week
   const h = await db.prepare("SELECT name FROM hospitals WHERE id = ?").bind(hospitalId).first<{ name: string }>();
   if (!h) return null;
   const pw = prevWeek(week);
-  const cur = (await db.prepare("SELECT platform, score, sov FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(hospitalId, week).all()).results as { platform: string; score: number; sov: number | null }[];
+  const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(hospitalId, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
   if (!cur.length) return null;
   const prev = (await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(hospitalId, pw).all()).results as { platform: string; score: number }[];
   const pmap = Object.fromEntries(prev.map((r) => [r.platform, r.score]));
@@ -67,13 +67,14 @@ export async function buildWeeklyReport(db: D1Database, hospitalId: number, week
   if (down.length > up.length) notes.push(`내려간 키워드가 올라간 키워드보다 많습니다 (${down.length} vs ${up.length}).`);
   if (!prev.length) notes.push("첫 주 측정입니다. 증감과 추세는 다음 주부터 표시됩니다.");
   const next = new Date(week + "T00:00:00Z"); next.setUTCDate(next.getUTCDate() + 7);
-  return { week, hospital: h.name, total, prevTotal, delta: total != null && prevTotal != null ? Math.round((total - prevTotal) * 10) / 10 : null, platforms, up: up.slice(0, 3), down: down.slice(0, 3), reputation, alerts, notes, nextRun: next.toISOString().slice(0, 10) };
+  return { week, hospital: h.name, total, prevTotal, weighted: cur.find((r) => r.platform === "total")?.weighted_score ?? null, delta: total != null && prevTotal != null ? Math.round((total - prevTotal) * 10) / 10 : null, platforms, up: up.slice(0, 3), down: down.slice(0, 3), reputation, alerts, notes, nextRun: next.toISOString().slice(0, 10) };
 }
 
 export function reportToText(r: ReportContent): string {
   const l: string[] = [];
   l.push(`${r.hospital} 주간 가시성 리포트 (${r.week} 주)`);
   l.push(`온라인 가시성 점수: ${r.total ?? "—"}${r.delta != null ? ` (${r.delta >= 0 ? "+" : ""}${r.delta})` : ""}`);
+  if (r.weighted != null) l.push(`수요 가중 점수(검색량 반영): ${r.weighted}`);
   l.push("");
   l.push("플랫폼별");
   for (const p of r.platforms) l.push(`- ${p.label}: ${p.score}${p.prev != null ? ` (지난주 ${p.prev})` : ""}${p.sov != null ? ` · 점유율 ${Math.round(p.sov * 100)}%` : ""}`);

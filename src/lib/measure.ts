@@ -12,6 +12,7 @@ import { collectNaverApi } from "../collectors/naver-api";
 import { collectGoogleSerp, collectGooglePlaces } from "../collectors/google";
 import { collectKakao } from "../collectors/kakao";
 import { fetchSignalScore } from "../collectors/signal";
+import { fetchVolumes } from "../collectors/naver-searchad";
 import type { HospitalRow } from "./session";
 
 export type RunKind = "first" | "weekly" | "manual";
@@ -207,6 +208,17 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
       await db.prepare("INSERT OR REPLACE INTO reputation_snapshots (hospital_id, entity_type, entity_id, platform, snapshot_date, review_count, blog_review_count, rating, detail, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
         .bind(h.id, r.entityKey === "self" ? "self" : "competitor", ent.competitorId, r.platform, runDate, r.review_count, r.blog_review_count, r.rating, JSON.stringify(r.detail), kstIso()).run();
     }
+    // ── 검색량 갱신 (30일 지난 것만, 검색광고 API 키 있을 때)
+    if (platformAvailability(env).searchVolume) {
+      try {
+        const stale = (await db.prepare("SELECT id, text FROM keywords WHERE hospital_id = ? AND is_active = 1 AND (volume_updated_at IS NULL OR volume_updated_at < ?)").bind(h.id, new Date(Date.now() - 30 * 86400_000).toISOString()).all()).results as { id: number; text: string }[];
+        if (stale.length) {
+          const vols = await fetchVolumes(stale.map((k) => k.text), { NAVER_SEARCHAD_KEY: env.NAVER_SEARCHAD_KEY!, NAVER_SEARCHAD_SECRET: env.NAVER_SEARCHAD_SECRET!, NAVER_SEARCHAD_CUSTOMER: env.NAVER_SEARCHAD_CUSTOMER! }, fetchImpl);
+          await db.batch(vols.map((v, i) => db.prepare("UPDATE keywords SET monthly_pc = ?, monthly_mobile = ?, volume_low = ?, volume_updated_at = ? WHERE id = ?").bind(v.found ? v.pc : 0, v.found ? v.mobile : 0, v.low ? 1 : 0, kstIso(), stale[i].id)));
+          log(`검색량 갱신 ${vols.length}개`);
+        }
+      } catch (e) { errors.push(`searchad ${String(e).slice(0, 60)}`); }
+    }
     let signalScore: number | null = null;
     if (use.signal) {
       try { signalScore = (await fetchSignalScore(h.ps_hospital_id!, { SIGNAL_API_URL: env.SIGNAL_API_URL!, SIGNAL_API_KEY: env.SIGNAL_API_KEY! }, fetchImpl)).score; }
@@ -230,7 +242,10 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
 
 /** run 의 관측치 전체에서 플랫폼 점수·SOV·통합 점수를 계산해 weekly_scores 에 쓴다 */
 export async function computeWeeklyScores(db: D1Database, hospitalId: number, runId: number, week: string, signalScore: number | null) {
-  const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, o.detail, k.text FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ?").bind(runId).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; text: string }[];
+  const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, o.detail, k.text, k.monthly_pc, k.monthly_mobile FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ?").bind(runId).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; text: string; monthly_pc: number | null; monthly_mobile: number | null }[];
+  // 키워드별 월 검색수 (없으면 null → 가중 점수 계산에서 제외)
+  const volume: Record<string, number | null> = {};
+  for (const o of obs) volume[o.text] = o.monthly_pc == null && o.monthly_mobile == null ? null : (o.monthly_pc ?? 0) + (o.monthly_mobile ?? 0);
   const compKeys = [...new Set(obs.filter((o) => o.entity_type === "competitor").map((o) => `c${o.entity_id}`))];
   const rows: Record<string, KeywordObs[]> = {};
   // 구글 자연검색(CSE)이 없으면 비즈니스 프로필(Places) 순위를 구글 점수로 쓴다 (2026-09-23: CSE 전체 웹 검색 지원 중단)
@@ -248,11 +263,20 @@ export async function computeWeeklyScores(db: D1Database, hospitalId: number, ru
   for (const [p, list] of Object.entries(rows)) platforms[p] = platformScore(list);
   if (signalScore != null) platforms.signal_ai = { score: signalScore, sov: null, shown: 0 };
   const total = totalScore(Object.fromEntries(Object.entries(platforms).map(([p, v]) => [p, v.score])));
+  // 수요 가중 점수: Σ(키워드 점수 × 월 검색수) ÷ Σ(월 검색수). 검색수 없는 키워드는 제외, 전부 없으면 null.
+  const weighted: Record<string, number | null> = {};
+  for (const [p, list] of Object.entries(rows)) {
+    let num = 0, den = 0;
+    for (const r of list) { const v = volume[r.keyword]; if (v == null) continue; const w = Math.max(v, 10); num += r.self * w; den += w; }
+    weighted[p] = den ? Math.round((num / den) * 10) / 10 : null;
+  }
+  if (signalScore != null) weighted.signal_ai = signalScore;
+  const totalWeighted = Object.values(weighted).some((v) => v != null) ? totalScore(weighted) : null;
   const stmts = Object.entries(platforms).map(([p, v]) =>
-    db.prepare("INSERT OR REPLACE INTO weekly_scores (hospital_id, week_start, platform, score, sov, keyword_count, shown_count, detail, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-      .bind(hospitalId, week, p, v.score ?? 0, v.sov, rows[p]?.length ?? 0, v.shown, JSON.stringify({ runId }), kstIso()));
-  if (total != null) stmts.push(db.prepare("INSERT OR REPLACE INTO weekly_scores (hospital_id, week_start, platform, score, sov, keyword_count, shown_count, detail, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-    .bind(hospitalId, week, "total", total, platforms.naver_place?.sov ?? platforms.naver_serp?.sov ?? platforms.google?.sov ?? null, rows.naver_serp?.length ?? rows.google?.length ?? 0, platforms.naver_serp?.shown ?? platforms.google?.shown ?? 0, JSON.stringify({ runId, platforms: Object.keys(platforms) }), kstIso()));
+    db.prepare("INSERT OR REPLACE INTO weekly_scores (hospital_id, week_start, platform, score, sov, keyword_count, shown_count, detail, weighted_score, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .bind(hospitalId, week, p, v.score ?? 0, v.sov, rows[p]?.length ?? 0, v.shown, JSON.stringify({ runId }), weighted[p] ?? null, kstIso()));
+  if (total != null) stmts.push(db.prepare("INSERT OR REPLACE INTO weekly_scores (hospital_id, week_start, platform, score, sov, keyword_count, shown_count, detail, weighted_score, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .bind(hospitalId, week, "total", total, platforms.naver_place?.sov ?? platforms.naver_serp?.sov ?? platforms.google?.sov ?? null, rows.naver_serp?.length ?? rows.google?.length ?? 0, platforms.naver_serp?.shown ?? platforms.google?.shown ?? 0, JSON.stringify({ runId, platforms: Object.keys(platforms) }), totalWeighted, kstIso()));
   if (stmts.length) await db.batch(stmts);
   return { platforms, total };
 }

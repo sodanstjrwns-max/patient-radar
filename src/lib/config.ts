@@ -25,6 +25,9 @@ export type Bindings = {
   GOOGLE_CSE_CX?: string;
   GOOGLE_PLACES_KEY?: string;
   KAKAO_REST_KEY?: string;
+  NAVER_SEARCHAD_KEY?: string;
+  NAVER_SEARCHAD_SECRET?: string;
+  NAVER_SEARCHAD_CUSTOMER?: string;
   SIGNAL_API_URL?: string;
   SIGNAL_API_KEY?: string;
   // 메일
@@ -49,5 +52,6 @@ export function platformAvailability(env: Bindings) {
     kakao: !!env.KAKAO_REST_KEY,
     signal: !!(env.SIGNAL_API_URL && env.SIGNAL_API_KEY),
     mail: !!env.RESEND_API_KEY,
+    searchVolume: !!(env.NAVER_SEARCHAD_KEY && env.NAVER_SEARCHAD_SECRET && env.NAVER_SEARCHAD_CUSTOMER),
   };
 }

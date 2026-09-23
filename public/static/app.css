@@ -37,3 +37,5 @@
 .inline{display:inline-flex;gap:6px;align-items:center}.inline select{padding:4px 6px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--text)}
 .report h2{margin-top:22px}
 @media (max-width:640px){.score-big{font-size:48px}.bar-row{grid-template-columns:110px 1fr 44px}}
+
+.weighted{margin:8px 0 0;font-size:15px}.defs li{font-size:14px;color:var(--muted);line-height:1.6}.defs b{color:var(--text)}.matrix td.vol{color:var(--muted)}

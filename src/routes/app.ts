@@ -168,13 +168,13 @@ app.get("/app", async (c) => {
   const weeks = (await db.prepare("SELECT DISTINCT week_start FROM weekly_scores WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 2").bind(h.id).all()).results as { week_start: string }[];
   const week = weeks[0]?.week_start ?? null;
   const prevWeek = weeks[1]?.week_start ?? null;
-  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at };
+  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false };
   if (week) {
-    const cur = (await db.prepare("SELECT platform, score, sov FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null }[];
+    const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
     const prev = prevWeek ? ((await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; score: number }[]) : [];
     const pm = Object.fromEntries(prev.map((r) => [r.platform, r.score]));
     const t = cur.find((r) => r.platform === "total");
-    d.total = { score: t?.score ?? null, prev: pm.total ?? null, sov: t?.sov ?? null, series: ((await db.prepare("SELECT week_start, score FROM weekly_scores WHERE hospital_id = ? AND platform = 'total' ORDER BY week_start DESC LIMIT 8").bind(h.id).all()).results as { week_start: string; score: number }[]).reverse().map((r) => ({ week: r.week_start, score: r.score })) };
+    d.total = { score: t?.score ?? null, prev: pm.total ?? null, sov: t?.sov ?? null, weighted: t?.weighted_score ?? null, series: ((await db.prepare("SELECT week_start, score FROM weekly_scores WHERE hospital_id = ? AND platform = 'total' ORDER BY week_start DESC LIMIT 8").bind(h.id).all()).results as { week_start: string; score: number }[]).reverse().map((r) => ({ week: r.week_start, score: r.score })) };
     const state = (key: string): "ok" | "unmeasured" | "needs_key" | "plan" => {
       if (cur.some((r) => r.platform === key)) return "ok";
       if (key === "naver_serp" || key === "naver_place") return limits.platforms.includes("naver") ? (u.naver ? "unmeasured" : "needs_key") : "plan";
@@ -186,13 +186,13 @@ app.get("/app", async (c) => {
     // 최신 run 관측치 → 매트릭스·경쟁사 점수
     const run = await db.prepare("SELECT id FROM crawl_runs WHERE hospital_id = ? AND status IN ('completed','blocked') ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number }>();
     if (run) {
-      const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, o.detail, k.text FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? ORDER BY k.sort_order, k.id").bind(run.id).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; text: string }[];
+      const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, o.detail, k.text, k.monthly_pc, k.monthly_mobile, k.volume_low FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? ORDER BY k.sort_order, k.id").bind(run.id).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; text: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number }[];
       const plats = ["naver_place", "naver_serp", "google_serp", "google_business", "kakao_map"].filter((p) => obs.some((o) => o.platform === p));
       d.matrixPlatforms = plats.map((p) => ({ key: p, label: p === "google_serp" ? "구글 검색" : p === "google_business" ? "구글 비즈니스" : p === "kakao_map" ? "카카오맵" : PLATFORM_LABEL[p] }));
       const byKw = new Map<string, DashboardData["matrix"][number]>();
       const compScore: Record<string, number[]> = {}; const selfScores: number[] = [];
       for (const o of obs) {
-        let row = byKw.get(o.text); if (!row) { row = { keyword: o.text, cells: {}, competitors: {} }; byKw.set(o.text, row); }
+        let row = byKw.get(o.text); if (!row) { const vol = o.monthly_pc == null && o.monthly_mobile == null ? null : (o.monthly_pc ?? 0) + (o.monthly_mobile ?? 0); if (vol != null) d.hasVolume = true; row = { keyword: o.text, volume: vol, volumeLow: !!o.volume_low, cells: {}, competitors: {} }; byKw.set(o.text, row); }
         const det = (() => { try { return JSON.parse(o.detail || "{}"); } catch { return {}; } })();
         if (o.entity_type === "self") { row.cells[o.platform] = { rank: o.rank, shown: !!o.shown, ad: !!det.placeAd }; if (o.platform === "naver_place" || o.platform === "google_serp" || o.platform === "google_business" || o.platform === "kakao_map") selfScores.push(obsScore(o.platform, o.shown, o.rank, det)); }
         else if (o.platform === "naver_place") { row.competitors[`c${o.entity_id}`] = { rank: o.rank, shown: !!o.shown }; (compScore[`c${o.entity_id}`] ||= []).push(obsScore(o.platform, o.shown, o.rank, det)); }
