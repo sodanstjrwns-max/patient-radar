@@ -108,7 +108,7 @@ export function Step3({ h, suggestions, existing, limit, note, error }: { h: { n
       <section class="card narrow">
         <p class="eyebrow">STEP 3 / 3</p>
         <h1>비교할 경쟁 병원</h1>
-        <p class="muted">상위 키워드에서 플레이스 상위 5에 반복 등장한 병원을 추천합니다. 플랜 한도 <b>{limit}곳</b>.{limit === 0 ? " FREE 플랜은 경쟁사 비교가 없습니다 — 건너뛰어도 됩니다." : ""}</p>
+        <p class="muted">허브 프로필의 경쟁 병원 목록을 먼저 가져오고, 없으면 상위 키워드에서 플레이스 상위 5에 반복 등장한 병원을 추천합니다. 여기서 고른 병원은 허브 프로필에도 저장되어 시그널 등 다른 서비스가 같은 목록을 씁니다. 플랜 한도 <b>{limit}곳</b>.{limit === 0 ? " FREE 플랜은 경쟁사 비교가 없습니다 — 건너뛰어도 됩니다." : ""}</p>
         {note ? <p class="notice-inline">{note}</p> : null}
         {error ? <p class="error">{error}</p> : null}
         <form method="post" action="/app/onboarding/step3" class="form">
@@ -404,6 +404,7 @@ export function Settings({ h, hospital, keywords, competitors, settings, users, 
       </section>
       <section class="card">
         <div class="card-head"><h2>경쟁 병원 <small class="muted">{competitors.filter((c) => c.is_active).length} / {limits.competitors}곳</small></h2></div>
+        <p class="muted small">허브 프로필의 경쟁 병원과 맞춰집니다 — 허브에 적은 병원은 여기에 자동으로 나타나고, 여기서 저장한 이름·플레이스 ID는 <a class="text-link" href="https://hub.patientfunnel.kr/profile" target="_blank" rel="noopener">허브 프로필 ↗</a>로 되돌아갑니다.</p>
         <form method="post" action="/app/settings/competitors" class="form">
           <div class="kw-grid">{competitors.map((c) => <label class="kw-item"><input type="checkbox" name="active" value={String(c.id)} checked={!!c.is_active} /> {c.name}{c.naver_place_id ? <small class="muted"> #{c.naver_place_id}</small> : null}</label>)}</div>
           <label>추가 (한 줄에 하나 · 이름 뒤에 <i>|플레이스ID</i> 를 붙이면 정확히 매칭)<textarea name="extra" rows={2} placeholder="더보스톤치과병원|672785300"></textarea></label>

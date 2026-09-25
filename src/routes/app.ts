@@ -30,14 +30,62 @@ function splitRegion(region: string) {
   return { sido: p[0] || null, sigungu: p.slice(1, -1).join(" ") || (p.length === 2 ? p[1] : null), dong: p.length >= 3 ? p[p.length - 1] : null };
 }
 
-async function hubProfile(c: { env: AppEnv["Bindings"] }, hid: string | null) {
+type HubBasic = { clinic_type?: string | null; region?: string | null; key_treatments?: string[] };
+type HubCompetitor = { name: string; aliases: string[]; naver_place_id: string | null; region: string | null };
+/** 허브 프로필(기본 정보 + 경쟁 병원 정본). 허브가 없거나 실패하면 null */
+async function hubProfile(c: { env: AppEnv["Bindings"] }, hid: string | null): Promise<{ basic: HubBasic | null; competitors: HubCompetitor[] } | null> {
   if (!hid || !c.env.HUB_API_KEY) return null;
   try {
     const res = await fetch(`${HUB_ORIGIN}/api/v1/hospital-profile`, { headers: { Authorization: `Bearer ${c.env.HUB_API_KEY}`, "X-PS-Hospital-Id": hid }, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
-    const j = (await res.json()) as { hospital_profile?: { basic?: { clinic_type?: string | null; region?: string | null; key_treatments?: string[] } } };
-    return j.hospital_profile?.basic || null;
+    const j = (await res.json()) as { hospital_profile?: { basic?: HubBasic; competitors?: Partial<HubCompetitor>[] } };
+    const competitors = (j.hospital_profile?.competitors || []).filter((x) => x && typeof x.name === "string" && x.name.trim())
+      .map((x) => ({ name: x.name!.trim(), aliases: Array.isArray(x.aliases) ? x.aliases.filter((a): a is string => typeof a === "string") : [], naver_place_id: x.naver_place_id ? String(x.naver_place_id) : null, region: x.region || null }));
+    return { basic: j.hospital_profile?.basic || null, competitors };
   } catch { return null; }
+}
+const normName = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+/** 허브 정본 → 레이더. 허브에만 있는 경쟁 병원을 추가(한도 안이면 활성)하고, 비어 있던 플레이스 ID·별칭을 채운다 */
+async function pullHubCompetitors(c: { env: AppEnv["Bindings"] }, h: HospitalRow): Promise<{ hubCount: number; added: number }> {
+  const hub = await hubProfile(c, h.ps_hospital_id);
+  const list = hub?.competitors || [];
+  if (!list.length) return { hubCount: 0, added: 0 };
+  const db = c.env.DB;
+  const rows = (await db.prepare("SELECT id, name, name_aliases, naver_place_id, is_active FROM competitors WHERE hospital_id = ?").bind(h.id).all()).results as { id: number; name: string; name_aliases: string | null; naver_place_id: string | null; is_active: number }[];
+  const limit = limitsOf(h.plan).competitors;
+  let active = rows.filter((r) => r.is_active).length;
+  const stmts: D1PreparedStatement[] = [];
+  let added = 0;
+  for (const hc of list) {
+    if (normName(hc.name) === normName(h.name) || (hc.naver_place_id && hc.naver_place_id === h.naver_place_id)) continue; // 우리 병원은 제외
+    const keys = [hc.name, ...hc.aliases].map(normName);
+    const hit = rows.find((r) => (hc.naver_place_id && r.naver_place_id === hc.naver_place_id) || [r.name, ...parseJsonArr(r.name_aliases)].map(normName).some((k) => keys.includes(k)));
+    if (hit) {
+      const aliases = parseJsonArr(hit.name_aliases);
+      const merged = [...new Set([...aliases, ...hc.aliases.filter((a) => normName(a) !== normName(hit.name))])].slice(0, 5);
+      if ((!hit.naver_place_id && hc.naver_place_id) || merged.length !== aliases.length) stmts.push(db.prepare("UPDATE competitors SET naver_place_id = COALESCE(naver_place_id, ?), name_aliases = ? WHERE id = ?").bind(hc.naver_place_id, JSON.stringify(merged), hit.id));
+      continue;
+    }
+    const on = active < limit ? 1 : 0; if (on) active++;
+    stmts.push(db.prepare("INSERT INTO competitors (hospital_id, name, name_aliases, naver_place_id, is_auto, is_active, created_at) VALUES (?,?,?,?,0,?,?) ON CONFLICT(hospital_id, name) DO UPDATE SET naver_place_id = COALESCE(competitors.naver_place_id, excluded.naver_place_id)").bind(h.id, hc.name.slice(0, 60), JSON.stringify(hc.aliases.slice(0, 5)), hc.naver_place_id, on, kstIso()));
+    added++;
+  }
+  for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
+  return { hubCount: list.length, added };
+}
+/** 레이더 → 허브. 활성 경쟁 병원(이름·별칭·플레이스 ID)을 정본에 병합한다(허브 쪽이 빈 칸만 채움). 실패해도 흐름을 막지 않는다 */
+async function pushHubCompetitors(env: AppEnv["Bindings"], h: HospitalRow): Promise<boolean> {
+  if (!h.ps_hospital_id || !env.HUB_API_KEY) return false;
+  const rows = (await env.DB.prepare("SELECT name, name_aliases, naver_place_id FROM competitors WHERE hospital_id = ? AND is_active = 1 ORDER BY id").bind(h.id).all()).results as { name: string; name_aliases: string | null; naver_place_id: string | null }[];
+  if (!rows.length) return false;
+  try {
+    const res = await fetch(`${HUB_ORIGIN}/api/v1/hospital-profile/competitors`, {
+      method: "PUT", headers: { Authorization: `Bearer ${env.HUB_API_KEY}`, "X-PS-Hospital-Id": h.ps_hospital_id, "Content-Type": "application/json" },
+      body: JSON.stringify({ competitors: rows.map((r) => ({ name: r.name, aliases: parseJsonArr(r.name_aliases), naver_place_id: r.naver_place_id, region: null })) }), signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) console.log("[radar] hub competitors push failed", res.status);
+    return res.ok;
+  } catch (e) { console.log("[radar] hub competitors push error", String(e).slice(0, 120)); return false; }
 }
 
 /** 「지역 × 진료」 생성 후, 검색광고 API가 있으면 검색량과 연관 키워드로 재정렬한다 */
@@ -65,7 +113,7 @@ app.get("/app/onboarding", async (c) => {
   const step = Number(c.req.query("step") || 0) || (!h.clinic_type || !h.region_sigungu ? 1 : 2);
   const limits = limitsOf(h.plan);
   if (step === 1) {
-    const basic = !h.clinic_type ? await hubProfile(c, h.ps_hospital_id) : null;
+    const basic = !h.clinic_type ? (await hubProfile(c, h.ps_hospital_id))?.basic || null : null;
     return c.html(Step1({ h: hv(h), prefill: {
       name: h.name, aliases: parseJsonArr(h.name_aliases).join(", "), clinic_type: h.clinic_type || basic?.clinic_type || "치과",
       region: regionOf(h) || basic?.region || "", treatments: parseJsonArr(h.key_treatments).join(", ") || (basic?.key_treatments || []).join(", "),
@@ -75,14 +123,16 @@ app.get("/app/onboarding", async (c) => {
     const kws = (await c.env.DB.prepare("SELECT id, text, is_active, source, monthly_pc, monthly_mobile, volume_low FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number }[];
     return c.html(Step2({ h: hv(h), keywords: kws, limit: limits.keywords, withVolume: kws.some((k) => k.monthly_pc != null) }));
   }
-  // step 3: 추천 후보 — 상위 키워드 3개 즉석 조회(가능한 네이버 경로로)
+  // step 3: 허브 프로필의 경쟁 병원 정본을 먼저 채우고, 없을 때만 상위 키워드 3개로 플레이스 추천을 만든다
+  const pulled = limits.competitors > 0 ? await pullHubCompetitors(c, h) : { hubCount: 0, added: 0 };
   const existing = (await c.env.DB.prepare("SELECT id, name FROM competitors WHERE hospital_id = ? AND is_active = 1").bind(h.id).all()).results as { id: number; name: string }[];
   const kws = (await c.env.DB.prepare("SELECT text FROM keywords WHERE hospital_id = ? AND is_active = 1 ORDER BY sort_order, id LIMIT 3").bind(h.id).all()).results as { text: string }[];
   const counts = new Map<string, { count: number; placeId: string | null }>();
   const self = (await loadEntities(c.env.DB, h))[0];
   const avail = platformAvailability(c.env);
   let note: string | undefined;
-  if (limits.competitors > 0 && avail.naver) {
+  if (pulled.hubCount) note = `허브 프로필에 적어 둔 경쟁 병원 ${pulled.hubCount}곳을 가져왔습니다. 더 비교할 곳만 아래에 적어 주세요.`;
+  else if (limits.competitors > 0 && avail.naver) {
     try {
       for (const k of kws) {
         const names: { name: string; placeId: string | null }[] = [];
@@ -155,6 +205,7 @@ async function saveCompetitors(c: { env: AppEnv["Bindings"] }, h: HospitalRow, b
 app.post("/app/onboarding/step3", async (c) => {
   const h = c.get("hospital");
   await saveCompetitors(c, h, await c.req.parseBody({ all: true }), "keep");
+  await pushHubCompetitors(c.env, h); // 플레이스에서 찾은 이름·ID를 허브 정본으로 되돌린다
   await c.env.DB.prepare("UPDATE hospitals SET onboarded_at = COALESCE(onboarded_at, ?), updated_at = ? WHERE id = ?").bind(kstIso(), kstIso(), h.id).run();
   return c.redirect("/app/first-run");
 });
@@ -347,7 +398,7 @@ async function renderSettings(c: { env: AppEnv["Bindings"]; get: (k: "hospital")
     keywords, competitors, settings, users, limits: lim, flash,
     platform: { naver: st(u.naver, lim.platforms.includes("naver"), a.naver) + (a.naverMode ? ` · ${a.naverMode === "api" ? "공식 API" : "HTML"}` : ""), google: st(u.google, lim.platforms.includes("google"), a.google), kakao: st(u.kakao, lim.platforms.includes("kakao"), a.kakao), signal: st(u.signal, lim.platforms.includes("signal"), a.signal), mail: a.mail ? "설정됨" : "키 필요(운영자)" } });
 }
-app.get("/app/settings", async (c) => c.html(await renderSettings(c, c.req.query("ok") ? "저장했습니다." : null, c.req.query("err") || null)));
+app.get("/app/settings", async (c) => { if (limitsOf(c.get("hospital").plan).competitors > 0) await pullHubCompetitors(c, c.get("hospital")); return c.html(await renderSettings(c, c.req.query("ok") ? "저장했습니다." : null, c.req.query("err") || null)); });
 app.post("/app/settings/hospital", async (c) => {
   const h = c.get("hospital"); const b = await c.req.parseBody();
   const r = splitRegion(str(b.region)); const website = str(b.website_url);
@@ -366,7 +417,7 @@ app.post("/app/settings/keywords", async (c) => {
   const over = await saveKeywords(c, h, b);
   return c.redirect(over ? "/app/settings?ok=1&over=1" : "/app/settings?ok=1");
 });
-app.post("/app/settings/competitors", async (c) => { const h = c.get("hospital"); await saveCompetitors(c, h, await c.req.parseBody({ all: true }), "active"); return c.redirect("/app/settings?ok=1"); });
+app.post("/app/settings/competitors", async (c) => { const h = c.get("hospital"); await saveCompetitors(c, h, await c.req.parseBody({ all: true }), "active"); await pushHubCompetitors(c.env, h); return c.redirect("/app/settings?ok=1"); });
 app.post("/app/settings/report", async (c) => {
   const h = c.get("hospital"); const b = await c.req.parseBody();
   const rec = csv(b.recipients).filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)).slice(0, 5);
