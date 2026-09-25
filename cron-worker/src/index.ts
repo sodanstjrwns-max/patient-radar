@@ -28,9 +28,15 @@ async function reports(env: Env, week?: string) {
   return r;
 }
 
+async function reviews(env: Env, hospital?: number) {
+  const r = await callApp(env, `/api/cron/reviews${hospital ? `?hospital=${hospital}` : ""}`);
+  await env.STATE.put("last:reviews", JSON.stringify({ at: new Date().toISOString(), ...r }));
+  return r;
+}
 export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     if (event.cron === "30 23 * * 0") ctx.waitUntil(reports(env));
+    else if (event.cron === "0 19 * * *") ctx.waitUntil(reviews(env));
     else ctx.waitUntil(measure(env));
   },
   async fetch(req: Request, env: Env) {
@@ -40,6 +46,7 @@ export default {
     const job = u.searchParams.get("job") || "status";
     if (job === "measure") return Response.json(await measure(env, { all: u.searchParams.get("all") === "1", hospital: Number(u.searchParams.get("hospital")) || undefined }));
     if (job === "reports") return Response.json(await reports(env, u.searchParams.get("week") || undefined));
-    return Response.json({ measure: JSON.parse((await env.STATE.get("last:measure")) || "null"), reports: JSON.parse((await env.STATE.get("last:reports")) || "null") });
+    if (job === "reviews") return Response.json(await reviews(env, Number(u.searchParams.get("hospital")) || undefined));
+    return Response.json({ measure: JSON.parse((await env.STATE.get("last:measure")) || "null"), reports: JSON.parse((await env.STATE.get("last:reports")) || "null"), reviews: JSON.parse((await env.STATE.get("last:reviews")) || "null") });
   },
 };

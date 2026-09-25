@@ -160,6 +160,7 @@ export type DashboardData = {
   platforms: { key: string; label: string; score: number | null; prev: number | null; sov: number | null; state: "ok" | "unmeasured" | "needs_key" | "plan" }[];
   matrix: { keyword: string; volume: number | null; volumeLow?: boolean; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
   hasVolume: boolean;
+  reviews: { rows: { entity: string; self: boolean; velocity30: number | null; analyzed: number; negative: number; replied: number; treatments: [string, number][]; complaints: [string, number][] }[]; recentNegative: { entity: string; body: string; complaints: string[]; written_at: string | null }[]; latest: { body: string; written_at: string | null; treatments: string[] }[] } | null;
   content: { platform: string; label: string; followers: number | null; prevFollowers: number | null; views: number | null; prevViews: number | null; date: string; manual: boolean; top: { title: string; views: number }[] }[];
   arrivals: { week_start: string; first_visits: number; answered: number; search: number; naver: number; google: number; ai: number; sns: number; content: number; referral: number; sign: number; nearby: number; other: number; coverage: number | null }[];
   opportunity: { pool: number; platforms: { key: string; label: string; captured: number; coverage: number | null; prev: number | null }[]; lost: LostItem[]; competitors: { name: string; captured: number; coverage: number | null }[]; selfCaptured: number } | null;
@@ -281,6 +282,20 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
                 <thead><tr><th>병원</th><th>플랫폼</th>{d.reputation[0].points.map((p) => <th>{p.date.slice(5)}</th>)}</tr></thead>
                 <tbody>{d.reputation.map((r) => <tr><td>{r.entity}</td><td>{r.platform}</td>{r.points.map((p) => <td>{p.reviews == null ? "—" : p.reviews.toLocaleString()}{p.blog != null ? <small class="muted"> +블로그 {p.blog.toLocaleString()}</small> : null}{p.rating != null ? <small class="muted"> ★{p.rating}</small> : null}</td>)}</tr>)}</tbody>
               </table></div>
+            </section>
+          ) : null}
+          {d.reviews ? (
+            <section class="card">
+              <div class="card-head"><h2>리뷰 <small class="muted">네이버 방문자 리뷰 · 최근 30일</small></h2></div>
+              <div class="table-scroll"><table class="matrix">
+                <thead><tr><th>병원</th><th>30일 리뷰 증가</th><th>분석한 리뷰</th><th>부정 신호</th><th>답글</th><th>많이 언급된 진료</th><th>불만 키워드</th></tr></thead>
+                <tbody>{d.reviews.rows.map((r) => <tr class={r.self ? "self-row" : ""}><td class="kw">{r.entity}</td><td>{r.velocity30 == null ? <span class="muted">다음 주부터</span> : <b>+{r.velocity30.toLocaleString()}</b>}</td><td>{r.analyzed}</td><td>{r.negative ? <span class="delta down">{r.negative}</span> : "0"}</td><td>{r.replied}/{r.analyzed}</td><td class="small">{r.treatments.length ? r.treatments.slice(0, 4).map(([k, n]) => `${k} ${n}`).join(" · ") : <span class="muted">—</span>}</td><td class="small">{r.complaints.length ? r.complaints.slice(0, 4).map(([k, n]) => `${k} ${n}`).join(" · ") : <span class="muted">없음</span>}</td></tr>)}</tbody>
+              </table></div>
+              <div class="grid-2">
+                <div><h3>새 부정 신호 리뷰 <small class="muted">불만 키워드 2개 이상</small></h3>{d.reviews.recentNegative.length ? <ul class="plain small">{d.reviews.recentNegative.map((n) => <li><b>{n.entity}</b> <span class="muted">{n.written_at || ""}</span> · {n.complaints.join("·")}<br />{n.body.slice(0, 140)}</li>)}</ul> : <p class="muted small">최근 30일 없음</p>}</div>
+                <div><h3>우리 최근 리뷰</h3><ul class="plain small">{d.reviews.latest.map((r) => <li><span class="muted">{r.written_at || ""}</span> {r.body.slice(0, 90)}{r.treatments.length ? <small class="vol-badge"> {r.treatments.join("·")}</small> : null}</li>)}</ul></div>
+              </div>
+              <p class="muted small">30일 리뷰 증가 = 플레이스 방문자 리뷰 수의 4주 전 대비 차이. 분석한 리뷰 = 매일 새로 읽은 최신 리뷰(작성자 정보는 저장하지 않고 본문만 90일 보관). 불만 키워드는 규칙 사전(불친절·대기·비싸·아프·과잉 등)으로 잡습니다.</p>
             </section>
           ) : null}
           {d.content.length ? (

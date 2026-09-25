@@ -19,6 +19,8 @@ import { fetchArrivalStats } from "../collectors/form";
 import { collectYoutube } from "../collectors/youtube";
 import { collectInstagram, collectThreads, instagramRefresh, threadsRefresh } from "../collectors/meta";
 import { decryptToken, encryptToken } from "./crypto";
+import { collectNaverReviews } from "../collectors/naver-reviews";
+import { analyzeReview, isNegative } from "./review-analysis";
 import { localityCandidates } from "./keywords";
 import type { HospitalRow } from "./session";
 
@@ -231,6 +233,10 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
       try { signalScore = (await fetchSignalScore(h.ps_hospital_id!, { SIGNAL_API_URL: env.SIGNAL_API_URL!, SIGNAL_API_KEY: env.SIGNAL_API_KEY! }, fetchImpl)).score; }
       catch (e) { errors.push(`signal ${String(e).slice(0, 60)}`); }
     }
+    // ── 리뷰 본문(네이버 방문자 리뷰, 본원+경쟁사) → 분석·통계·부정 리뷰 경보
+    if (use.naver && use.naverMode === "html" && !naverPaused && !blocked) {
+      try { const r = await syncReviews(env, h, entities, fetchImpl); log(`리뷰 ${r.fetched}건 확인 · 새 리뷰 ${r.inserted}건 · 부정 ${r.negative}건`); } catch (e) { errors.push(`reviews ${String(e).slice(0, 60)}`); }
+    }
     // ── 콘텐츠 도달(3층): 유튜브·인스타·스레드 스냅샷
     try { const r = await syncSocial(env, h, fetchImpl); for (const line of r) log(line); } catch (e) { errors.push(`social ${String(e).slice(0, 60)}`); }
     // ── 페이션트 폼 내원경로 반입(병원별 키가 있을 때, 최근 8주)
@@ -399,4 +405,38 @@ export async function syncSocial(env: Bindings, h: HospitalRow, fetchImpl: typeo
     catch (e) { out.push(`스레드 오류 ${String(e).slice(0, 40)}`); }
   }
   return out;
+}
+
+/** 네이버 방문자 리뷰 수집(플레이스 ID 있는 본원·경쟁사) → reviews(중복 제외) → review_stats(30일) → 부정 리뷰 경보 */
+export async function syncReviews(env: Bindings, h: HospitalRow, entities: EntityX[], fetchImpl: typeof fetch = fetch) {
+  const db = env.DB; const today = kstDate(); const since30 = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+  let fetched = 0, inserted = 0, negative = 0;
+  const newNegatives: { entity: string; body: string; complaints: string[] }[] = [];
+  for (const e of entities) {
+    if (!e.placeId) continue;
+    let list;
+    try { list = await collectNaverReviews(e.placeId, fetchImpl); } catch (err) { if (err instanceof NaverBlockedError) throw err; continue; }
+    fetched += list.length;
+    for (const r of list) {
+      const a = analyzeReview(r.body, h.clinic_type);
+      const neg = isNegative(null, a.complaints);
+      const res = await db.prepare("INSERT OR IGNORE INTO reviews (hospital_id, entity_type, entity_id, platform, review_key, rating, body, reply, visit_count, written_at, treatments, complaints, negative, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", r.key, null, r.body.slice(0, 2000), r.reply ? r.reply.slice(0, 1000) : null, r.visitCount, r.writtenAt, JSON.stringify(a.treatments), JSON.stringify(a.complaints), neg ? 1 : 0, kstIso()).run();
+      if (res.meta.changes) { inserted++; if (neg) { negative++; if (e.key === "self") newNegatives.push({ entity: e.name, body: r.body.slice(0, 120), complaints: a.complaints }); } }
+    }
+    // 30일 통계
+    const rows = (await db.prepare("SELECT negative, reply, treatments, complaints FROM reviews WHERE hospital_id = ? AND platform = 'naver_place' AND entity_type = ? AND COALESCE(entity_id, 0) = ? AND written_at >= ?").bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId ?? 0, since30).all()).results as { negative: number; reply: string | null; treatments: string; complaints: string }[];
+    const tc: Record<string, number> = {}, cc: Record<string, number> = {};
+    for (const r of rows) { for (const t of JSON.parse(r.treatments || "[]")) tc[t] = (tc[t] || 0) + 1; for (const c of JSON.parse(r.complaints || "[]")) cc[c] = (cc[c] || 0) + 1; }
+    await db.prepare("INSERT OR REPLACE INTO review_stats (hospital_id, entity_type, entity_id, platform, stat_date, count_30d, negative_30d, replied_30d, treatments, complaints, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", today, rows.length, rows.filter((r) => r.negative).length, rows.filter((r) => r.reply).length, JSON.stringify(tc), JSON.stringify(cc), kstIso()).run();
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  if (newNegatives.length) {
+    await db.prepare("INSERT INTO alerts (hospital_id, severity, code, message, detail, created_at) VALUES (?,?,?,?,?,?)")
+      .bind(h.id, "warn", `negative_review:${today}:${newNegatives.length}`, `부정 신호 리뷰 ${newNegatives.length}건이 새로 올라왔습니다: ${newNegatives.map((n) => `「${n.body.slice(0, 40)}…」(${n.complaints.join("·")})`).join(" / ").slice(0, 300)}`, JSON.stringify(newNegatives), kstIso()).run();
+  }
+  // 90일 지난 본문 파기(통계는 남음)
+  await db.prepare("DELETE FROM reviews WHERE hospital_id = ? AND fetched_at < ?").bind(h.id, new Date(Date.now() - 90 * 86400_000).toISOString()).run();
+  return { fetched, inserted, negative, newNegatives };
 }

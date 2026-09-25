@@ -4,7 +4,8 @@ import type { Bindings } from "../lib/config";
 import { platformAvailability } from "../lib/config";
 import { equalSecret, adminAuthorized, issueAdminSession } from "../lib/security";
 import type { HospitalRow } from "../lib/session";
-import { runHospital } from "../lib/measure";
+import { runHospital, syncReviews, loadEntities } from "../lib/measure";
+import { limitsOf } from "../lib/plan-limits";
 import { buildWeeklyReport, reportToText, sendMail, sendOpsAlert } from "../lib/report";
 import { kstDate, kstIso, weekStart } from "../lib/time";
 import { AdminLogin, AdminPage } from "../views-app";
@@ -41,6 +42,34 @@ api.post("/api/cron/run-hospital/:id", async (c) => {
   return c.json(r, r.ok ? 200 : 200);
 });
 
+/** 매일: 리뷰 본문 수집 + 부정 리뷰 즉시 메일 (네이버 HTML 모드일 때만) */
+api.post("/api/cron/reviews", async (c) => {
+  if (!c.env.CRON_SECRET) return err(c, "CRON_NOT_CONFIGURED", "크론 시크릿이 필요합니다.", 503);
+  if (!(await cronAuth(c))) return err(c, "UNAUTHORIZED", "크론 인증이 필요합니다.", 401);
+  if (platformAvailability(c.env).naverMode !== "html") return c.json({ skipped: "naver_html_mode_off" });
+  const only = Number(c.req.query("hospital") || 0) || null;
+  const hospitals = (await c.env.DB.prepare(`SELECT * FROM hospitals WHERE status = 'active' AND onboarded_at IS NOT NULL ${only ? "AND id = ?" : ""} ORDER BY id`).bind(...(only ? [only] : [])).all()).results as HospitalRow[];
+  const out: Record<string, unknown>[] = [];
+  for (const h of hospitals) {
+    try {
+      const entities = (await loadEntities(c.env.DB, h, limitsOf(h.plan).competitors));
+      const r = await syncReviews(c.env, h, entities);
+      let mailed = false;
+      if (r.newNegatives.length && c.env.RESEND_API_KEY) {
+        const users = (await c.env.DB.prepare("SELECT email FROM hospital_users WHERE hospital_id = ?").bind(h.id).all()).results as { email: string }[];
+        const s = await c.env.DB.prepare("SELECT report_email_enabled, report_recipients FROM hospital_settings WHERE hospital_id = ?").bind(h.id).first<{ report_email_enabled: number; report_recipients: string }>();
+        const to = [...new Set([...users.map((u) => u.email), ...(JSON.parse(s?.report_recipients || "[]") as string[])])];
+        if (to.length && (!s || s.report_email_enabled)) {
+          const text = `${h.name} 네이버 방문자 리뷰에 부정 신호가 ${r.newNegatives.length}건 새로 올라왔습니다.\n\n` + r.newNegatives.map((n) => `- (${n.complaints.join("·")}) ${n.body}`).join("\n") + `\n\n48시간 안에 답글을 남기면 다음 방문자 리뷰 신뢰도에 도움이 됩니다.\n대시보드: ${c.env.PUBLIC_ORIGIN || new URL(c.req.url).origin}/app`;
+          mailed = (await sendMail(c.env, to, `[페이션트 레이더] ${h.name} 부정 리뷰 ${r.newNegatives.length}건`, text)).ok;
+        }
+      }
+      out.push({ id: h.id, fetched: r.fetched, inserted: r.inserted, negative: r.negative, mailed });
+    } catch (e) { out.push({ id: h.id, error: String(e).slice(0, 80) }); if (String(e).includes("NAVER_BLOCKED")) break; }
+    await new Promise((res) => setTimeout(res, 2000));
+  }
+  return c.json({ date: kstDate(), results: out });
+});
 api.post("/api/cron/weekly-reports", async (c) => {
   if (!c.env.CRON_SECRET) return err(c, "CRON_NOT_CONFIGURED", "크론 시크릿이 필요합니다.", 503);
   if (!(await cronAuth(c))) return err(c, "UNAUTHORIZED", "크론 인증이 필요합니다.", 401);

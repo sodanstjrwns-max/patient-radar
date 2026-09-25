@@ -189,7 +189,7 @@ app.get("/app", async (c) => {
   const weeks = (await db.prepare("SELECT DISTINCT week_start FROM weekly_scores WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 2").bind(h.id).all()).results as { week_start: string }[];
   const week = weeks[0]?.week_start ?? null;
   const prevWeek = weeks[1]?.week_start ?? null;
-  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, content: [], arrivals: [], opportunity: null };
+  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, reviews: null, content: [], arrivals: [], opportunity: null };
   if (week) {
     const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
     const prev = prevWeek ? ((await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; score: number }[]) : [];
@@ -244,6 +244,19 @@ app.get("/app", async (c) => {
         lost: (det.lost || []).slice(0, 8),
         competitors: Object.values(det.competitors || {}).sort((a, b) => b.captured - a.captured),
         selfCaptured: np.captured,
+      };
+    }
+    // 리뷰: review_stats 최신 + 방문자 리뷰 수 4주 증가분 + 부정 리뷰
+    const rs = (await db.prepare("SELECT entity_type, entity_id, count_30d, negative_30d, replied_30d, treatments, complaints, stat_date FROM review_stats WHERE hospital_id = ? AND platform = 'naver_place' AND stat_date = (SELECT MAX(stat_date) FROM review_stats WHERE hospital_id = ? AND platform = 'naver_place')").bind(h.id, h.id).all()).results as { entity_type: string; entity_id: number | null; count_30d: number; negative_30d: number; replied_30d: number; treatments: string; complaints: string }[];
+    if (rs.length) {
+      const names: Record<string, string> = {}; for (const x of d.competitors) names[`c${x.id}`] = x.name;
+      const snaps = (await db.prepare("SELECT entity_type, entity_id, snapshot_date, review_count FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place' ORDER BY snapshot_date DESC").bind(h.id).all()).results as { entity_type: string; entity_id: number | null; snapshot_date: string; review_count: number | null }[];
+      const velocity = (et: string, id: number | null) => { const list = snaps.filter((x) => x.entity_type === et && (x.entity_id ?? 0) === (id ?? 0)); if (list.length < 2 || list[0].review_count == null) return null; const cutoff = new Date(new Date(list[0].snapshot_date).getTime() - 28 * 86400_000).toISOString().slice(0, 10); const old = list.find((x) => x.snapshot_date <= cutoff) || list[list.length - 1]; return old.review_count == null || old.snapshot_date === list[0].snapshot_date ? null : list[0].review_count - old.review_count; };
+      const top = (j: string) => (Object.entries(JSON.parse(j || "{}")) as [string, number][]).sort((a, b) => b[1] - a[1]);
+      d.reviews = {
+        rows: rs.sort((a) => (a.entity_type === "self" ? -1 : 1)).map((r) => ({ entity: r.entity_type === "self" ? h.name : names[`c${r.entity_id}`] || "경쟁사", self: r.entity_type === "self", velocity30: velocity(r.entity_type, r.entity_id), analyzed: r.count_30d, negative: r.negative_30d, replied: r.replied_30d, treatments: top(r.treatments), complaints: top(r.complaints) })).filter((r) => r.self || r.entity !== "경쟁사"),
+        recentNegative: ((await db.prepare("SELECT entity_type, entity_id, body, complaints, written_at FROM reviews WHERE hospital_id = ? AND negative = 1 ORDER BY written_at DESC, id DESC LIMIT 6").bind(h.id).all()).results as { entity_type: string; entity_id: number | null; body: string; complaints: string; written_at: string | null }[]).map((n) => ({ entity: n.entity_type === "self" ? h.name : names[`c${n.entity_id}`] || "경쟁사", body: n.body, complaints: JSON.parse(n.complaints || "[]"), written_at: n.written_at })),
+        latest: ((await db.prepare("SELECT body, written_at, treatments FROM reviews WHERE hospital_id = ? AND entity_type = 'self' ORDER BY written_at DESC, id DESC LIMIT 5").bind(h.id).all()).results as { body: string; written_at: string | null; treatments: string }[]).map((r) => ({ body: r.body, written_at: r.written_at, treatments: JSON.parse(r.treatments || "[]") })),
       };
     }
     // 콘텐츠 도달(유튜브·인스타·스레드): 최신 스냅샷 + 직전 스냅샷
