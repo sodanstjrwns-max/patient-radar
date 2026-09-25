@@ -31,13 +31,12 @@ export function AppLayout({ title, hospital, active, children, flash }: { title:
           <meta name="robots" content="noindex,nofollow" />
           <title>{title} · {APP_NAME.en}</title>
           <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
-          <link rel="stylesheet" href="/static/style.css" />
           <link rel="stylesheet" href="/static/app.css" />
         </head>
         <body class="app-body">
           <header class="app-header">
             <div class="app-header-inner">
-              <a href="/app" class="brand"><span class="logo-mark"><span /></span><span>patient<span class="brand-light">radar</span></span></a>
+              <a href="/app" class="brand"><span class="logo-mark" /><span>patient<b>radar</b></span></a>
               <nav class="app-nav">{nav.map(([href, label]) => <a href={href} class={active === href ? "active" : ""}>{label}</a>)}</nav>
               <div class="app-user"><span class="hname">{hospital.name}</span><span class="plan-chip">{hospital.plan}</span><form method="post" action="/api/auth/logout"><button class="linklike">로그아웃</button></form></div>
             </div>
@@ -160,6 +159,7 @@ export type DashboardData = {
   platforms: { key: string; label: string; score: number | null; prev: number | null; sov: number | null; state: "ok" | "unmeasured" | "needs_key" | "plan" }[];
   matrix: { keyword: string; volume: number | null; volumeLow?: boolean; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
   hasVolume: boolean;
+  insights: { tone: string; icon: string; title: string; evidence: string; action?: string }[];
   reviews: { rows: { entity: string; self: boolean; velocity30: number | null; analyzed: number; negative: number; replied: number; treatments: [string, number][]; complaints: [string, number][] }[]; recentNegative: { entity: string; body: string; complaints: string[]; written_at: string | null }[]; latest: { body: string; written_at: string | null; treatments: string[] }[] } | null;
   content: { platform: string; label: string; followers: number | null; prevFollowers: number | null; views: number | null; prevViews: number | null; date: string; manual: boolean; top: { title: string; views: number }[] }[];
   arrivals: { week_start: string; first_visits: number; answered: number; search: number; naver: number; google: number; ai: number; sns: number; content: number; referral: number; sign: number; nearby: number; other: number; coverage: number | null }[];
@@ -181,7 +181,18 @@ function Spark({ series }: { series: { week: string; score: number }[] }) {
   return <svg class="spark" viewBox={`0 0 ${w} ${hgt}`} width={w} height={hgt} aria-label="8주 추세"><polyline points={pts} fill="none" stroke="currentColor" stroke-width="2" /></svg>;
 }
 
+function Sec({ title, sub, open, children, id }: { title: string; sub?: string; open?: boolean; children: Child; id?: string }) {
+  return (
+    <details class="sec" open={!!open} id={id}>
+      <summary><span class="sec-title">{title}</span>{sub ? <span class="sec-sub">{sub}</span> : null}<span class="sec-chev">›</span></summary>
+      <div class="sec-body">{children}</div>
+    </details>
+  );
+}
+
 export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: DashboardData }) {
+  const np = d.opportunity?.platforms.find((p) => p.key === "naver_place");
+  const lastWeek = d.arrivals[0];
   return (
     <AppLayout title="대시보드" hospital={h} active="/app">
       {!d.onboarded ? <div class="notice-inline">온보딩이 끝나지 않았습니다. <a href="/app/onboarding">이어서 진행 →</a></div> : null}
@@ -189,140 +200,119 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
         <section class="card"><h1>아직 측정 결과가 없습니다</h1><p class="muted">첫 측정을 실행하면 이 자리에 점수가 표시됩니다.</p><a class="button button-primary" href="/app/first-run">첫 측정 →</a></section>
       ) : (
         <>
-          {d.opportunity ? (
-            <section class="card opp">
-              <div class="card-head"><h2>검색 기회 <small class="muted">이 키워드들을 찾는 사람 중 우리가 보인 기회</small></h2></div>
-              <div class="opp-top">
-                <div><p class="eyebrow">월 검색 수요</p><div class="score-hero"><span class="score-big">{d.opportunity.pool.toLocaleString()}</span><span class="score-cap">회 / 월 · 활성 키워드 합계(네이버)</span></div></div>
-                <div class="opp-bars">{d.opportunity.platforms.map((p) => (
-                  <div class="bar-row"><span class="bar-label">{p.label}</span><span class={"bar " + (p.key === "naver_place" ? "self" : "")} style={`width:${Math.max(2, Math.round((p.coverage ?? 0) * 100))}%`} /><span class="bar-val">{pct(p.coverage)} <small class="muted">{p.captured.toLocaleString()}회</small>{p.prev != null && p.coverage != null ? <small class={"delta " + (p.coverage - p.prev > 0.005 ? "up" : p.coverage - p.prev < -0.005 ? "down" : "flat")}> {p.coverage - p.prev >= 0 ? "▲" : "▼"}{Math.abs(Math.round((p.coverage - p.prev) * 100))}%p</small> : null}</span></div>
-                ))}</div>
-              </div>
-              <div class="grid-2">
-                <div>
-                  <h3>놓친 기회 순위 <small class="muted">네이버 플레이스 · 검색수 × (1 − 노출 확률)</small></h3>
-                  <div class="table-scroll"><table class="matrix"><thead><tr><th>키워드</th><th>월 검색</th><th>우리</th><th>놓침</th><th>3위 진입 시</th><th>위에 있는 병원</th></tr></thead>
-                    <tbody>{d.opportunity.lost.map((l) => <tr><td class="kw">{l.keyword}</td><td>{l.volume.toLocaleString()}</td><td>{rankCell(l.rank, false)}</td><td><b>{l.lost.toLocaleString()}</b></td><td class="muted">{l.gainTop3 > 0 ? "+" + l.gainTop3.toLocaleString() : "—"}</td><td class="small muted">{l.above.length ? l.above.join(" · ") : (l.rank == null ? "경쟁사도 없음" : "—")}</td></tr>)}</tbody></table></div>
-                  <h3>이렇게 하면 <small class="muted">놓친 기회 상위 키워드별 · 실측 신호에서 나온 처방</small></h3>
-                  <ul class="plain actions">{d.opportunity.lost.slice(0, 5).filter((l) => l.actions && l.actions.length).map((l) => <li><b>{l.keyword}</b> <small class="muted">월 {l.volume.toLocaleString()} · {l.rank == null ? "미노출" : l.rank + "위"}</small><ul>{(l.actions || []).map((a) => <li>{a}</li>)}</ul></li>)}</ul>
-                </div>
-                <div>
-                  <h3>누가 이 수요를 가져가나 <small class="muted">네이버 플레이스 기회 점유</small></h3>
-                  <div class="bars">
-                    <div class="bar-row"><span class="bar-label">우리 병원</span><span class="bar self" style={`width:${Math.max(2, Math.round((d.opportunity.selfCaptured / Math.max(1, d.opportunity.pool)) * 100))}%`} /><span class="bar-val">{d.opportunity.selfCaptured.toLocaleString()}</span></div>
-                    {d.opportunity.competitors.map((c) => <div class="bar-row"><span class="bar-label">{c.name}</span><span class="bar" style={`width:${Math.max(2, Math.round((c.coverage ?? 0) * 100))}%`} /><span class="bar-val">{c.captured.toLocaleString()}</span></div>)}
-                  </div>
-                  <p class="muted small">막대 = 월 검색 수요 대비 잡은 기회. 같은 키워드에서 여러 병원이 동시에 보이므로 합이 100%를 넘을 수 있습니다.</p>
-                </div>
-              </div>
+          {/* ── 한눈에 ── */}
+          <section class="hero-tiles">
+            <div class="tile tile-main">
+              <p class="tile-label">검색 기회 커버율 <small>네이버 플레이스 · {d.week} 주</small></p>
+              <div class="tile-num">{np ? pct(np.coverage) : "—"}{np ? <span class="tile-delta">{np.prev != null && np.coverage != null ? <span class={"delta " + (np.coverage - np.prev > 0.005 ? "up" : np.coverage - np.prev < -0.005 ? "down" : "flat")}>{np.coverage - np.prev >= 0 ? "▲" : "▼"}{Math.abs(Math.round((np.coverage - np.prev) * 100))}%p</span> : <span class="muted small">첫 주</span>}</span> : null}</div>
+              <p class="tile-sub">{d.opportunity ? <>월 <b>{d.opportunity.pool.toLocaleString()}</b>명이 검색 · 우리에게 보인 기회 <b>{np?.captured.toLocaleString()}</b>명</> : "검색량 연결 전"}</p>
+            </div>
+            <div class="tile">
+              <p class="tile-label">온라인 가시성 점수</p>
+              <div class="tile-num">{fmt(d.total.score, 1)}<span class="tile-cap">/100</span>{delta(d.total.score, d.total.prev)}</div>
+              <p class="tile-sub">{d.total.weighted != null ? <>수요 가중 <b>{fmt(d.total.weighted, 1)}</b> · 점유율 {pct(d.total.sov)}</> : <>점유율 {pct(d.total.sov)}</>}</p>
+            </div>
+            <div class="tile">
+              <p class="tile-label">지난주 신환 <small>페이션트 폼</small></p>
+              <div class="tile-num">{lastWeek ? lastWeek.first_visits : "—"}<span class="tile-cap">명</span></div>
+              <p class="tile-sub">{lastWeek ? <>검색 <b>{lastWeek.search}</b> · 소개 {lastWeek.referral} · AI {lastWeek.ai} · SNS/콘텐츠 {lastWeek.sns + lastWeek.content}</> : "폼 연결 전"}</p>
+            </div>
+          </section>
+
+          {/* ── 인사이트 ── */}
+          {d.insights.length ? (
+            <section class="insights">
+              <h2 class="h2">이번 주 인사이트 <small class="muted">실측 숫자에서 규칙으로 뽑은 문장 · 근거는 아래 각 섹션</small></h2>
+              <ol class="insight-list">{d.insights.map((i) => (
+                <li class={"insight " + i.tone}><span class="ins-icon">{i.icon}</span><div><p class="ins-title">{i.title}</p><p class="ins-evidence">{i.evidence}</p>{i.action ? <p class="ins-action">→ {i.action}</p> : null}</div></li>
+              ))}</ol>
             </section>
           ) : null}
-          <section class="grid-2">
-            <div class="card score-card">
-              <p class="eyebrow">온라인 가시성 점수 · {d.week} 주</p>
-              <div class="score-hero"><span class="score-big">{fmt(d.total.score, 1)}</span><span class="score-cap">/ 100</span>{delta(d.total.score, d.total.prev)}</div>
-              <div class="score-sub"><Spark series={d.total.series} /><span class="muted small">{d.total.prev == null ? "증감·추세는 다음 주부터 표시" : "전주 대비"}</span></div>
-              {d.total.weighted != null ? <p class="weighted">수요 가중 <b>{fmt(d.total.weighted, 1)}</b> <span class="muted small">· 검색량이 큰 키워드에 비중을 둔 점수</span></p> : null}
-            </div>
-            <div class="card">
-              <p class="eyebrow">점유율 (SOV)</p>
-              <div class="score-hero"><span class="score-big">{pct(d.total.sov)}</span></div>
-              <p class="muted small">{d.competitors.length ? `경쟁 ${d.competitors.length}곳과 같은 키워드에서` : "경쟁사를 추가하면 점유율이 계산됩니다"}</p>
-            </div>
-          </section>
-          <section class="platform-cards">
-            {d.platforms.map((p) => (
-              <div class={"card pcard " + p.state}>
-                <p class="eyebrow">{p.label}</p>
-                {p.state === "ok" ? <div class="pscore"><span class="num">{fmt(p.score, 1)}</span>{delta(p.score, p.prev)}</div> : <div class="pscore"><span class="num muted">—</span></div>}
-                <p class="muted small">{p.state === "ok" ? (p.sov != null ? `점유율 ${pct(p.sov)}` : " ") : p.state === "needs_key" ? "측정 안 됨 · 키 필요" : p.state === "plan" ? "상위 플랜에서 제공" : "이번 주 미측정"}</p>
-                {p.key === "signal_ai" && p.state !== "ok" ? <a class="text-link small" href="https://patientsignal.kr" target="_blank" rel="noopener">시그널 연결하기 ↗</a> : null}
+
+          {d.opportunity ? (
+            <Sec title="검색 기회" sub="놓친 기회 순위 · 누가 가져가나 · 처방" open id="opp">
+              <div class="opp-top">
+                <div class="opp-bars">{d.opportunity.platforms.map((p) => (
+                  <div class="bar-row"><span class="bar-label">{p.label}</span><span class={"bar " + (p.key === "naver_place" ? "self" : "")} style={`width:${Math.max(2, Math.round((p.coverage ?? 0) * 100))}%`} /><span class="bar-val">{pct(p.coverage)} <small class="muted">{p.captured.toLocaleString()}명</small></span></div>
+                ))}</div>
+                <div class="bars">
+                  <p class="small muted">누가 이 수요를 가져가나 · 네이버 플레이스</p>
+                  <div class="bar-row"><span class="bar-label">우리 병원</span><span class="bar self" style={`width:${Math.max(2, Math.round((d.opportunity.selfCaptured / Math.max(1, d.opportunity.pool)) * 100))}%`} /><span class="bar-val">{d.opportunity.selfCaptured.toLocaleString()}</span></div>
+                  {d.opportunity.competitors.map((c) => <div class="bar-row"><span class="bar-label">{c.name}</span><span class="bar" style={`width:${Math.max(2, Math.round((c.coverage ?? 0) * 100))}%`} /><span class="bar-val">{c.captured.toLocaleString()}</span></div>)}
+                </div>
               </div>
-            ))}
-          </section>
-          <section class="card">
-            <div class="card-head"><h2>키워드 매트릭스</h2><div class="row"><a href={d.compare ? "/app" : "/app?compare=1"} class="button button-small button-outline">{d.compare ? "우리 병원 보기" : "경쟁사와 비교"}</a></div></div>
+              <div class="table-scroll"><table class="matrix"><thead><tr><th>키워드</th><th>월 검색</th><th>우리</th><th>놓침</th><th>3위 진입 시</th><th>위에 있는 병원</th><th></th></tr></thead>
+                <tbody>{d.opportunity.lost.map((l) => [
+                  <tr><td class="kw">{l.keyword}</td><td>{l.volume.toLocaleString()}</td><td>{rankCell(l.rank, false)}</td><td><b>{l.lost.toLocaleString()}</b></td><td class="muted">{l.gainTop3 > 0 ? "+" + l.gainTop3.toLocaleString() : "—"}</td><td class="small muted">{l.above.length ? l.above.slice(0, 2).join(" · ") : (l.rank == null ? "경쟁사도 없음" : "—")}</td><td>{l.actions?.length ? <details class="rx-d"><summary>이렇게</summary><ul>{l.actions.map((a) => <li>{a}</li>)}</ul></details> : null}</td></tr>,
+                ])}</tbody></table></div>
+              <p class="muted small">검색 기회 = 월 검색수 × 순위별 노출 확률(1위 100 · 2위 80 · 3위 65 · 4위 45 · 5위 35 · 6~10위 15 · 다른 섹션 10%). 본 기회의 추정치이지 클릭 수가 아닙니다.</p>
+            </Sec>
+          ) : null}
+
+          <Sec title="키워드 순위" sub={d.compare ? "경쟁사 비교 · 네이버 플레이스" : "플랫폼별 자연 순위"}>
+            <div class="row" style="margin-bottom:8px"><a href={d.compare ? "/app#kw" : "/app?compare=1#kw"} class="button button-small button-outline">{d.compare ? "플랫폼별로 보기" : "경쟁사와 비교"}</a>
+              {d.platforms.filter((p) => p.state !== "ok").length ? <span class="muted small">미측정: {d.platforms.filter((p) => p.state !== "ok").map((p) => p.label + (p.state === "needs_key" ? "(키 필요)" : p.state === "plan" ? "(플랜)" : "")).join(", ")}</span> : null}</div>
             <div class="table-scroll"><table class="matrix">
-              <thead><tr><th>키워드</th>{d.hasVolume ? <th>월 검색수</th> : null}{d.compare ? [<th>우리 병원</th>, ...d.competitors.map((c) => <th>{c.name}</th>)] : d.matrixPlatforms.map((p) => <th>{p.label}</th>)}</tr></thead>
+              <thead><tr><th>키워드</th>{d.hasVolume ? <th>월 검색</th> : null}{d.compare ? [<th>우리</th>, ...d.competitors.map((c) => <th>{c.name}</th>)] : d.matrixPlatforms.map((p) => <th>{p.label}</th>)}</tr></thead>
               <tbody>{d.matrix.map((r) => (
                 <tr><td class="kw">{r.keyword}</td>{d.hasVolume ? <td class="vol">{r.volume == null ? <span class="muted">—</span> : <>{r.volume.toLocaleString()}{r.volumeLow ? <small class="muted"> ↓</small> : null}</>}</td> : null}
-                  {d.compare
-                    ? [<td>{rankCell(r.cells.naver_place?.rank, r.cells.naver_place?.shown, r.cells.naver_place?.ad)}</td>, ...d.competitors.map((c) => <td>{rankCell(r.competitors[`c${c.id}`]?.rank, r.competitors[`c${c.id}`]?.shown)}</td>)]
-                    : d.matrixPlatforms.map((p) => <td>{r.cells[p.key] ? rankCell(r.cells[p.key].rank, r.cells[p.key].shown, r.cells[p.key].ad) : <span class="muted">—</span>}</td>)}
-                </tr>
-              ))}</tbody>
-            </table></div>
-            <p class="muted small">{d.compare ? "네이버 플레이스 순위 기준" : "「노출」= 순위 목록엔 없지만 블로그·카페 등 다른 섹션에 이름이 나옴 · 「—」= 미노출"}{d.hasVolume ? " · 월 검색수 = 네이버 최근 30일 PC+모바일(검색광고 키워드도구), ↓ = 10 미만 포함 추정" : ""}</p>
-          </section>
-          <section class="card defs">
-            <h2>점수와 점유율은 이렇게 계산합니다</h2>
-            <ul class="plain">
-              <li><b>키워드 점수</b> — 플랫폼에서 우리 병원의 자연 순위(광고 제외)를 점수로 바꿉니다. 1위 100 · 2~3위 80 · 4~5위 60 · 6~10위 30 · 그 밖 10 · 순위엔 없지만 블로그·카페 등에 이름이 보이면 15 · 미노출 0.</li>
-              <li><b>플랫폼 점수</b> — 측정한 키워드의 키워드 점수 평균(0~100).</li>
-              <li><b>온라인 가시성 점수</b> — 플랫폼 점수의 가중 평균. 가중치 네이버 통합검색 35 · 네이버 플레이스 25 · 구글 20 · 카카오맵 10 · AI(시그널) 10. 키가 없거나 플랜에 없어 측정 안 된 플랫폼은 분모에서 뺍니다(0점으로 넣지 않음).</li>
-              <li><b>수요 가중 점수</b> — 키워드 점수에 그 키워드의 월 검색수를 곱해 평균. 많이 찾는 키워드에서 보이는지를 봅니다. 검색수가 없는 키워드는 제외.</li>
-              <li><b>점유율(SOV)</b> — 같은 키워드 세트에서 우리 병원 점수 합 ÷ (우리 + 경쟁 병원 점수 합). 경쟁 병원을 등록해야 계산됩니다. 상단 점유율은 네이버 플레이스 기준.</li>
-              <li><b>검색 기회</b> — 키워드 월 검색수 × 순위별 노출 확률(1위 100% · 2위 80% · 3위 65% · 4위 45% · 5위 35% · 6~10위 15% · 다른 섹션만 10% · 미노출 0%)의 합. "몇 명이 우리를 볼 기회가 있었나"의 추정치이지 클릭 수가 아닙니다. 놓친 기회 = 검색수 − 잡은 기회, "3위 진입 시"는 3위(65%)에 올랐을 때 늘어나는 기회.</li>
-              <li><b>미노출도 기록</b> — 안 보이는 것도 데이터입니다. 순위 없음은 「—」로 남기고, 다음 주와 비교합니다.</li>
-            </ul>
-          </section>
-          {d.competitors.length ? (
-            <section class="card">
-              <h2>경쟁사 비교 <small class="muted">키워드 세트 평균 점수</small></h2>
-              <div class="bars">
-                <div class="bar-row"><span class="bar-label">우리 병원</span><span class="bar self" style={`width:${Math.max(2, d.selfScore ?? 0)}%`} /><span class="bar-val">{fmt(d.selfScore, 1)}</span></div>
-                {d.competitors.map((c) => <div class="bar-row"><span class="bar-label">{c.name}</span><span class="bar" style={`width:${Math.max(2, c.score ?? 0)}%`} /><span class="bar-val">{fmt(c.score, 1)}</span></div>)}
-              </div>
-            </section>
-          ) : null}
-          {d.reputation.length ? (
-            <section class="card">
-              <h2>평판 추세 <small class="muted">리뷰 수</small></h2>
-              <div class="table-scroll"><table class="matrix">
-                <thead><tr><th>병원</th><th>플랫폼</th>{d.reputation[0].points.map((p) => <th>{p.date.slice(5)}</th>)}</tr></thead>
-                <tbody>{d.reputation.map((r) => <tr><td>{r.entity}</td><td>{r.platform}</td>{r.points.map((p) => <td>{p.reviews == null ? "—" : p.reviews.toLocaleString()}{p.blog != null ? <small class="muted"> +블로그 {p.blog.toLocaleString()}</small> : null}{p.rating != null ? <small class="muted"> ★{p.rating}</small> : null}</td>)}</tr>)}</tbody>
-              </table></div>
-            </section>
-          ) : null}
+                  {d.compare ? [<td>{rankCell(r.cells.naver_place?.rank, r.cells.naver_place?.shown, r.cells.naver_place?.ad)}</td>, ...d.competitors.map((c) => <td>{rankCell(r.competitors[`c${c.id}`]?.rank, r.competitors[`c${c.id}`]?.shown)}</td>)] : d.matrixPlatforms.map((p) => <td>{r.cells[p.key] ? rankCell(r.cells[p.key].rank, r.cells[p.key].shown, r.cells[p.key].ad) : <span class="muted">—</span>}</td>)}
+                </tr>))}</tbody></table></div>
+            <div class="platform-cards">{d.platforms.map((p) => <div class={"pcard " + p.state}><p class="tile-label">{p.label}</p><div class="pscore"><span class="num">{p.state === "ok" ? fmt(p.score, 1) : "—"}</span>{p.state === "ok" ? delta(p.score, p.prev) : null}</div><p class="muted small">{p.state === "ok" ? (p.sov != null ? `점유율 ${pct(p.sov)}` : " ") : p.state === "needs_key" ? "키 필요" : p.state === "plan" ? "상위 플랜" : "미측정"}</p></div>)}</div>
+            <p class="muted small">「노출」= 순위 목록엔 없지만 블로그·카페 등에 이름이 나옴 · 「—」= 미노출 · 월 검색 = 네이버 최근 30일(↓ 10 미만 포함)</p>
+          </Sec>
+
           {d.reviews ? (
-            <section class="card">
-              <div class="card-head"><h2>리뷰 <small class="muted">네이버 방문자 리뷰 · 최근 30일</small></h2></div>
+            <Sec title="리뷰" sub="네이버 방문자 리뷰 · 최근 30일 · 본원 vs 경쟁사">
               <div class="table-scroll"><table class="matrix">
-                <thead><tr><th>병원</th><th>30일 리뷰 증가</th><th>분석한 리뷰</th><th>부정 신호</th><th>답글</th><th>많이 언급된 진료</th><th>불만 키워드</th></tr></thead>
+                <thead><tr><th>병원</th><th>30일 리뷰 증가</th><th>분석</th><th>부정</th><th>답글</th><th>많이 언급된 진료</th><th>불만 키워드</th></tr></thead>
                 <tbody>{d.reviews.rows.map((r) => <tr class={r.self ? "self-row" : ""}><td class="kw">{r.entity}</td><td>{r.velocity30 == null ? <span class="muted">다음 주부터</span> : <b>+{r.velocity30.toLocaleString()}</b>}</td><td>{r.analyzed}</td><td>{r.negative ? <span class="delta down">{r.negative}</span> : "0"}</td><td>{r.replied}/{r.analyzed}</td><td class="small">{r.treatments.length ? r.treatments.slice(0, 4).map(([k, n]) => `${k} ${n}`).join(" · ") : <span class="muted">—</span>}</td><td class="small">{r.complaints.length ? r.complaints.slice(0, 4).map(([k, n]) => `${k} ${n}`).join(" · ") : <span class="muted">없음</span>}</td></tr>)}</tbody>
               </table></div>
               <div class="grid-2">
-                <div><h3>새 부정 신호 리뷰 <small class="muted">불만 키워드 2개 이상</small></h3>{d.reviews.recentNegative.length ? <ul class="plain small">{d.reviews.recentNegative.map((n) => <li><b>{n.entity}</b> <span class="muted">{n.written_at || ""}</span> · {n.complaints.join("·")}<br />{n.body.slice(0, 140)}</li>)}</ul> : <p class="muted small">최근 30일 없음</p>}</div>
-                <div><h3>우리 최근 리뷰</h3><ul class="plain small">{d.reviews.latest.map((r) => <li><span class="muted">{r.written_at || ""}</span> {r.body.slice(0, 90)}{r.treatments.length ? <small class="vol-badge"> {r.treatments.join("·")}</small> : null}</li>)}</ul></div>
+                <div><h3 class="h3">새 부정 신호 리뷰</h3>{d.reviews.recentNegative.length ? <ul class="plain small">{d.reviews.recentNegative.map((n) => <li><b>{n.entity}</b> <span class="muted">{n.written_at || ""}</span> · {n.complaints.join("·")}<br />{n.body.slice(0, 140)}</li>)}</ul> : <p class="muted small">최근 30일 없음</p>}</div>
+                <div><h3 class="h3">우리 최근 리뷰</h3><ul class="plain small">{d.reviews.latest.map((r) => <li><span class="muted">{r.written_at || ""}</span> {r.body.slice(0, 90)}{r.treatments.length ? <small class="vol-badge"> {r.treatments.join("·")}</small> : null}</li>)}</ul></div>
               </div>
-              <p class="muted small">30일 리뷰 증가 = 플레이스 방문자 리뷰 수의 4주 전 대비 차이. 분석한 리뷰 = 매일 새로 읽은 최신 리뷰(작성자 정보는 저장하지 않고 본문만 90일 보관). 불만 키워드는 규칙 사전(불친절·대기·비싸·아프·과잉 등)으로 잡습니다.</p>
-            </section>
+            </Sec>
           ) : null}
+
           {d.content.length ? (
-            <section class="card">
-              <div class="card-head"><h2>콘텐츠 도달 <small class="muted">앞단 콘텐츠 · 최근 30일</small></h2><a href="/app/settings#content" class="button button-small button-outline">계정 관리</a></div>
+            <Sec title="콘텐츠 도달" sub="유튜브 · 인스타그램 · 스레드 · 최근 30일">
               <div class="platform-cards">{d.content.map((x) => (
-                <div class="card pcard ok"><p class="eyebrow">{x.label}{x.manual ? " · 수동" : ""}</p>
+                <div class="pcard ok"><p class="tile-label">{x.label}{x.manual ? " · 수동" : ""}</p>
                   <div class="pscore"><span class="num">{x.views == null ? "—" : x.views.toLocaleString()}</span>{delta(x.views, x.prevViews)}</div><p class="muted small">30일 조회·도달</p>
                   <p class="small">구독·팔로워 <b>{x.followers?.toLocaleString() ?? "—"}</b> {delta(x.followers, x.prevFollowers)}</p>
-                  {x.top.length ? <ul class="plain small muted">{x.top.slice(0, 3).map((t) => <li>{t.title.slice(0, 28)} · {t.views.toLocaleString()}</li>)}</ul> : null}
+                  {x.top.length ? <ul class="plain small muted">{x.top.slice(0, 3).map((t) => <li>{t.title.slice(0, 26)} · {t.views.toLocaleString()}</li>)}</ul> : null}
                 </div>))}</div>
-            </section>
+              <p class="muted small"><a href="/app/settings#content" class="text-link">계정 관리</a></p>
+            </Sec>
           ) : null}
+
           {d.arrivals.length ? (
-            <section class="card">
-              <div class="card-head"><h2>실제 신환 경로 <small class="muted">페이션트 폼 접수 문진 · 주 단위 건수</small></h2></div>
+            <Sec title="실제 신환 경로" sub="페이션트 폼 접수 문진 · 주 단위 · 같은 주 플레이스 커버율과 나란히">
               <div class="table-scroll"><table class="matrix">
-                <thead><tr><th>주</th><th>신환</th><th>검색</th><th class="muted">네이버 / 구글</th><th>AI</th><th>SNS</th><th>콘텐츠</th><th>소개</th><th>간판·근처</th><th>기타</th><th>플레이스 기회 커버</th></tr></thead>
+                <thead><tr><th>주</th><th>신환</th><th>검색</th><th class="muted">네이버 / 구글</th><th>AI</th><th>SNS</th><th>콘텐츠</th><th>소개</th><th>간판·근처</th><th>기타</th><th>플레이스 커버</th></tr></thead>
                 <tbody>{d.arrivals.map((a) => <tr><td class="kw">{a.week_start.slice(5)}</td><td><b>{a.first_visits}</b>{a.answered < a.first_visits ? <small class="muted"> (응답 {a.answered})</small> : null}</td><td><b>{a.search}</b></td><td class="muted">{a.naver} / {a.google}</td><td>{a.ai}</td><td>{a.sns}</td><td>{a.content}</td><td>{a.referral}</td><td>{a.sign + a.nearby}</td><td>{a.other}</td><td>{a.coverage == null ? <span class="muted">—</span> : pct(a.coverage)}</td></tr>)}</tbody>
               </table></div>
-              <p class="muted small">1단계 인지 지표: 신환 중 「검색해서·AI에게 물어봐서·SNS·콘텐츠」 비중. 같은 주의 플레이스 기회 커버율을 옆에 두어, 노출이 오르내릴 때 검색 신환이 따라오는지 봅니다. 4주 이상 쌓여야 읽힙니다.</p>
-            </section>
+              <p class="muted small">1단계 인지 지표 = 신환 중 검색·AI·SNS·콘텐츠 비중. 노출이 오르내릴 때 검색 신환이 따라오는지 4주 이상 보세요.</p>
+            </Sec>
           ) : null}
-          <section class="grid-2">
-            <div class="card"><h2>경보</h2>{d.alerts.length ? <ul class="alerts">{d.alerts.map((a) => <li class={a.severity}><span class="sev">{a.severity}</span>{a.message}<small class="muted">{a.created_at.slice(0, 10)}</small></li>)}</ul> : <p class="muted">이번 주 경보 없음</p>}</div>
-            <div class="card"><h2>측정 기록</h2><ul class="runs">{d.runs.map((r) => <li><span>{r.run_date}</span><span class={"status " + r.status}>{r.status}</span><span class="muted small">{r.kind}{r.error ? " · " + r.error.slice(0, 60) : ""}</span></li>)}</ul></div>
-          </section>
+
+          <Sec title="경보 · 측정 기록" sub={`경보 ${d.alerts.length} · 최근 실행 ${d.runs[0]?.run_date ?? "—"}`}>
+            <div class="grid-2">
+              <div>{d.alerts.length ? <ul class="alerts">{d.alerts.map((a) => <li class={a.severity}><span class="sev">{a.severity}</span>{a.message}<small class="muted">{a.created_at.slice(0, 10)}</small></li>)}</ul> : <p class="muted small">경보 없음</p>}</div>
+              <div><ul class="runs">{d.runs.map((r) => <li><span>{r.run_date}</span><span class={"status " + r.status}>{r.status}</span><span class="muted small">{r.kind}{r.error ? " · " + r.error.slice(0, 60) : ""}</span></li>)}</ul></div>
+            </div>
+          </Sec>
+
+          <Sec title="점수와 점유율은 이렇게 계산합니다">
+            <ul class="plain defs">
+              <li><b>키워드 점수</b> — 자연 순위(광고 제외): 1위 100 · 2~3위 80 · 4~5위 60 · 6~10위 30 · 그 밖 10 · 다른 섹션에만 보이면 15 · 미노출 0.</li>
+              <li><b>플랫폼 점수</b> — 키워드 점수 평균. <b>온라인 가시성 점수</b> — 가중 평균(네이버 통합검색 35 · 플레이스 25 · 구글 20 · 카카오 10 · AI 10), 미측정 플랫폼은 분모 제외.</li>
+              <li><b>수요 가중 점수</b> — 키워드 점수에 월 검색수를 곱해 평균. <b>점유율</b> — 우리 점수 합 ÷ (우리 + 경쟁 병원 점수 합).</li>
+              <li><b>검색 기회</b> — 월 검색수 × 순위별 노출 확률의 합. 클릭 수가 아니라 "볼 기회"의 추정치. 놓친 기회 = 검색수 − 잡은 기회.</li>
+              <li><b>미노출도 기록</b> — 안 보이는 것도 데이터. 「—」로 남기고 다음 주와 비교.</li>
+            </ul>
+          </Sec>
         </>
       )}
     </AppLayout>
@@ -341,7 +331,7 @@ export function Settings({ h, hospital, keywords, competitors, settings, users, 
   platform: { naver: string; google: string; kakao: string; signal: string; mail: string };
   flash?: string | null;
   err?: string | null;
-  social: { youtube: { input: string; title: string | null; enabled: boolean }; instagram: { username: string | null; enabled: boolean }; threads: { username: string | null; enabled: boolean }; latest: Record<string, { followers: number | null; views: number | null; date: string; manual?: boolean }> };
+  social: { youtube: { input: string; title: string | null; enabled: boolean; channels: { id: string; title: string }[] }; instagram: { username: string | null; enabled: boolean }; threads: { username: string | null; enabled: boolean }; latest: Record<string, { followers: number | null; views: number | null; date: string; manual?: boolean }> };
 }) {
   return (
     <AppLayout title="설정" hospital={h} active="/app/settings" flash={flash}>
@@ -380,7 +370,7 @@ export function Settings({ h, hospital, keywords, competitors, settings, users, 
         <h2>콘텐츠 계정 <small class="muted">3층 · 콘텐츠 도달(구독자·팔로워·30일 조회수)</small></h2>
         <div class="grid-2">
           <form method="post" action="/app/settings/youtube" class="form">
-            <label>유튜브 채널 주소 (예: youtube.com/@채널핸들){social.youtube.title ? <small class="vol-badge">연결됨 · {social.youtube.title}</small> : null}<input name="channel" value={social.youtube.input} placeholder="https://www.youtube.com/@..." /></label>
+            <label>유튜브 채널 주소 (한 줄에 하나, 최대 5개){social.youtube.channels.length ? <small class="vol-badge">연결됨 · {social.youtube.channels.map((x) => x.title).join(" · ")}</small> : null}<textarea name="channels" rows={3} placeholder="https://www.youtube.com/@...">{social.youtube.input}</textarea></label>
             <div class="row"><button class="button button-primary button-small" type="submit" disabled={!social.youtube.enabled}>{social.youtube.enabled ? "저장" : "운영자 키 필요"}</button>{social.latest.youtube ? <span class="muted small">구독자 {social.latest.youtube.followers?.toLocaleString() ?? "—"} · 30일 조회 {social.latest.youtube.views?.toLocaleString() ?? "—"} ({social.latest.youtube.date})</span> : null}</div>
           </form>
           <div class="form">

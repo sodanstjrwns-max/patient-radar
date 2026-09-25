@@ -14,13 +14,14 @@ const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 const num = (v: unknown) => { const n = Number(str(v).replace(/[^0-9.]/g, "")); return str(v) && Number.isFinite(n) ? Math.round(n) : null; };
 
 social.post("/app/settings/youtube", async (c) => {
-  const h = c.get("hospital"); const b = await c.req.parseBody(); const input = str(b.channel);
-  if (!input) { await c.env.DB.prepare("UPDATE hospitals SET youtube_channel_id = NULL, youtube_channel_title = NULL WHERE id = ?").bind(h.id).run(); return c.redirect("/app/settings?ok=1#content"); }
+  const h = c.get("hospital"); const b = await c.req.parseBody();
+  const lines = str(b.channels).split(/\r?\n|,/).map((x) => x.trim()).filter(Boolean).slice(0, 5);
+  if (!lines.length) { await c.env.DB.prepare("UPDATE hospitals SET youtube_channels = '[]', youtube_channel_id = NULL, youtube_channel_title = NULL WHERE id = ?").bind(h.id).run(); return c.redirect("/app/settings?ok=1#content"); }
   if (!c.env.YOUTUBE_API_KEY) return c.redirect("/app/settings?err=" + encodeURIComponent("유튜브 API 키가 없습니다(운영자)"));
-  const ch = await resolveChannel(input, { YOUTUBE_API_KEY: c.env.YOUTUBE_API_KEY }).catch(() => null);
-  if (!ch) return c.redirect("/app/settings?err=" + encodeURIComponent("채널을 찾지 못했습니다. 채널 주소(@핸들 또는 /channel/UC…)를 확인해 주세요") + "#content");
-  await c.env.DB.prepare("UPDATE hospitals SET youtube_channel_id = ?, youtube_channel_title = ?, updated_at = ? WHERE id = ?").bind(ch.id, ch.title, kstIso(), h.id).run();
-  return c.redirect("/app/settings?ok=1#content");
+  const found: { id: string; title: string }[] = []; const missed: string[] = [];
+  for (const l of lines) { const ch = await resolveChannel(l, { YOUTUBE_API_KEY: c.env.YOUTUBE_API_KEY }).catch(() => null); if (ch && !found.some((f) => f.id === ch.id)) found.push(ch); else if (!ch) missed.push(l); }
+  await c.env.DB.prepare("UPDATE hospitals SET youtube_channels = ?, youtube_channel_id = ?, youtube_channel_title = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(found), found[0]?.id ?? null, found[0]?.title ?? null, kstIso(), h.id).run();
+  return c.redirect(missed.length ? "/app/settings?err=" + encodeURIComponent(`찾지 못한 채널: ${missed.join(", ")} (나머지는 저장됨)`) + "#content" : "/app/settings?ok=1#content");
 });
 
 /* ── OAuth 연결 ── */

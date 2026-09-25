@@ -385,9 +385,11 @@ export async function syncSocial(env: Bindings, h: HospitalRow, fetchImpl: typeo
   const put = (platform: string, followers: number | null, views30d: number | null, detail: Record<string, unknown>) =>
     env.DB.prepare("INSERT OR REPLACE INTO reputation_snapshots (hospital_id, entity_type, entity_id, platform, snapshot_date, review_count, blog_review_count, rating, save_count, followers, views_30d, detail, created_at) VALUES (?, 'self', NULL, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?)")
       .bind(h.id, platform, date, followers, views30d, JSON.stringify(detail), kstIso()).run();
-  if (env.YOUTUBE_API_KEY && h.youtube_channel_id) {
-    try { const y = await collectYoutube(h.youtube_channel_id, { YOUTUBE_API_KEY: env.YOUTUBE_API_KEY }, fetchImpl); await put("youtube", y.subscribers, y.views30d, { title: y.title, totalViews: y.totalViews, videoCount: y.videoCount, uploads30d: y.uploads30d, likes30d: y.likes30d, comments30d: y.comments30d, top: y.top }); out.push(`유튜브 구독자 ${y.subscribers ?? "—"} · 30일 조회 ${y.views30d.toLocaleString()} (영상 ${y.uploads30d}편)`); }
-    catch (e) { out.push(`유튜브 오류 ${String(e).slice(0, 40)}`); }
+  const channels: { id: string; title: string }[] = (() => { try { const a = JSON.parse(h.youtube_channels || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } })();
+  if (!channels.length && h.youtube_channel_id) channels.push({ id: h.youtube_channel_id, title: h.youtube_channel_title || "" });
+  if (env.YOUTUBE_API_KEY) for (const ch of channels) {
+    try { const y = await collectYoutube(ch.id, { YOUTUBE_API_KEY: env.YOUTUBE_API_KEY }, fetchImpl); await put(`youtube:${ch.id}`, y.subscribers, y.views30d, { title: y.title, channelId: ch.id, totalViews: y.totalViews, videoCount: y.videoCount, uploads30d: y.uploads30d, likes30d: y.likes30d, comments30d: y.comments30d, top: y.top }); out.push(`유튜브 ${y.title}: 구독자 ${y.subscribers ?? "—"} · 30일 조회 ${y.views30d.toLocaleString()} (영상 ${y.uploads30d}편)`); }
+    catch (e) { out.push(`유튜브 ${ch.title} 오류 ${String(e).slice(0, 40)}`); }
   }
   const nearExpiry = (iso: string | null) => !iso || new Date(iso).getTime() - Date.now() < 7 * 86400_000;
   if (h.ig_user_id && h.ig_token_enc && env.PS_SSO_SECRET) {

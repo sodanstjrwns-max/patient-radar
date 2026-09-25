@@ -11,6 +11,7 @@ import { runHospital, loadEntities, obsScore, parseJsonArr, usablePlatforms } fr
 import { htmlSerp } from "../collectors/naver-html";
 import { collectNaverApi } from "../collectors/naver-api";
 import { buildWeeklyReport, PLATFORM_LABEL } from "../lib/report";
+import { buildInsights } from "../lib/insights";
 import { kstIso } from "../lib/time";
 import { Step1, Step2, Step3, FirstRun, Dashboard, Settings, ReportList, ReportView, type DashboardData } from "../views-app";
 
@@ -189,7 +190,7 @@ app.get("/app", async (c) => {
   const weeks = (await db.prepare("SELECT DISTINCT week_start FROM weekly_scores WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 2").bind(h.id).all()).results as { week_start: string }[];
   const week = weeks[0]?.week_start ?? null;
   const prevWeek = weeks[1]?.week_start ?? null;
-  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, reviews: null, content: [], arrivals: [], opportunity: null };
+  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, insights: [], reviews: null, content: [], arrivals: [], opportunity: null };
   if (week) {
     const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
     const prev = prevWeek ? ((await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; score: number }[]) : [];
@@ -260,12 +261,14 @@ app.get("/app", async (c) => {
       };
     }
     // 콘텐츠 도달(유튜브·인스타·스레드): 최신 스냅샷 + 직전 스냅샷
-    const soc = (await db.prepare("SELECT platform, followers, views_30d, snapshot_date, detail FROM reputation_snapshots WHERE hospital_id = ? AND entity_type = 'self' AND platform IN ('youtube','instagram','threads') ORDER BY snapshot_date DESC LIMIT 60").bind(h.id).all()).results as { platform: string; followers: number | null; views_30d: number | null; snapshot_date: string; detail: string }[];
-    const labelS: Record<string, string> = { youtube: "유튜브", instagram: "인스타그램", threads: "스레드" };
-    for (const p of ["youtube", "instagram", "threads"]) {
+    const soc = (await db.prepare("SELECT platform, followers, views_30d, snapshot_date, detail FROM reputation_snapshots WHERE hospital_id = ? AND entity_type = 'self' AND (platform LIKE 'youtube%' OR platform IN ('instagram','threads')) ORDER BY snapshot_date DESC LIMIT 120").bind(h.id).all()).results as { platform: string; followers: number | null; views_30d: number | null; snapshot_date: string; detail: string }[];
+    const labelS: Record<string, string> = { instagram: "인스타그램", threads: "스레드" };
+    const plats = [...new Set(soc.map((x) => x.platform))].sort((a, b) => (a.startsWith("youtube") ? 1 : 0) - (b.startsWith("youtube") ? 1 : 0));
+    for (const p of plats) {
+      if (p === "youtube") continue; // 구형 단일 채널 스냅샷은 건너뜀
       const list = soc.filter((x) => x.platform === p); if (!list.length) continue;
       const cur = list[0], prev = list.find((x) => x.snapshot_date < cur.snapshot_date) || null; const det = JSON.parse(cur.detail || "{}");
-      d.content.push({ platform: p, label: labelS[p], followers: cur.followers, prevFollowers: prev?.followers ?? null, views: cur.views_30d, prevViews: prev?.views_30d ?? null, date: cur.snapshot_date, manual: !!det.manual, top: (det.top || []).map((t: { title?: string; caption?: string; views: number }) => ({ title: t.title || t.caption || "", views: t.views })) });
+      d.content.push({ platform: p, label: p.startsWith("youtube:") ? `유튜브 · ${det.title || ""}` : labelS[p], followers: cur.followers, prevFollowers: prev?.followers ?? null, views: cur.views_30d, prevViews: prev?.views_30d ?? null, date: cur.snapshot_date, manual: !!det.manual, top: (det.top || []).map((t: { title?: string; caption?: string; views: number }) => ({ title: t.title || t.caption || "", views: t.views })) });
     }
     // 실제 신환 경로(폼) × 같은 주 플레이스 기회 커버율
     const arr = (await db.prepare("SELECT week_start, first_visits, answered, groups, primary_paths FROM weekly_arrivals WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 10").bind(h.id).all()).results as { week_start: string; first_visits: number; answered: number; groups: string; primary_paths: string }[];
@@ -276,6 +279,7 @@ app.get("/app", async (c) => {
     d.alerts = (await db.prepare("SELECT severity, message, created_at FROM alerts WHERE hospital_id = ? ORDER BY id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["alerts"];
     d.runs = (await db.prepare("SELECT run_date, status, kind, error FROM crawl_runs WHERE hospital_id = ? ORDER BY run_date DESC, id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["runs"];
   }
+  d.insights = buildInsights(d, h.name, parseJsonArr(h.key_treatments));
   return c.html(Dashboard({ h: hv(h), d }));
 });
 
@@ -292,7 +296,8 @@ async function renderSettings(c: { env: AppEnv["Bindings"]; get: (k: "hospital")
   const snaps = (await db.prepare("SELECT platform, followers, views_30d, snapshot_date, detail FROM reputation_snapshots WHERE hospital_id = ? AND entity_type = 'self' AND platform IN ('youtube','instagram','threads') ORDER BY snapshot_date DESC LIMIT 30").bind(h.id).all()).results as { platform: string; followers: number | null; views_30d: number | null; snapshot_date: string; detail: string }[];
   const latest: Record<string, { followers: number | null; views: number | null; date: string; manual?: boolean }> = {};
   for (const x of snaps) if (!latest[x.platform]) latest[x.platform] = { followers: x.followers, views: x.views_30d, date: x.snapshot_date, manual: !!(JSON.parse(x.detail || "{}") as { manual?: boolean }).manual };
-  const social = { youtube: { input: h.youtube_channel_id ? `https://www.youtube.com/channel/${h.youtube_channel_id}` : "", title: h.youtube_channel_title, enabled: a.youtube }, instagram: { username: h.ig_username, enabled: a.instagram }, threads: { username: h.threads_username, enabled: a.threads }, latest };
+  const ytList: { id: string; title: string }[] = (() => { try { return JSON.parse(h.youtube_channels || "[]"); } catch { return []; } })();
+  const social = { youtube: { input: ytList.map((x) => `https://www.youtube.com/channel/${x.id}`).join("\n"), title: ytList.map((x) => x.title).join(" · ") || null, enabled: a.youtube, channels: ytList }, instagram: { username: h.ig_username, enabled: a.instagram }, threads: { username: h.threads_username, enabled: a.threads }, latest };
   return Settings({ h: hv(h), social, err: flashErr, hospital: { name: h.name, aliases: parseJsonArr(h.name_aliases).join(", "), clinic_type: h.clinic_type || "치과", region: regionOf(h), treatments: parseJsonArr(h.key_treatments).join(", "), naver_place_id: h.naver_place_id || "", website_url: h.website_url || "" },
     keywords, competitors, settings, users, limits: lim, flash,
     platform: { naver: st(u.naver, lim.platforms.includes("naver"), a.naver) + (a.naverMode ? ` · ${a.naverMode === "api" ? "공식 API" : "HTML"}` : ""), google: st(u.google, lim.platforms.includes("google"), a.google), kakao: st(u.kakao, lim.platforms.includes("kakao"), a.kakao), signal: st(u.signal, lim.platforms.includes("signal"), a.signal), mail: a.mail ? "설정됨" : "키 필요(운영자)" } });
