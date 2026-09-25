@@ -23,6 +23,9 @@ export type HospitalRow = {
   onboarded_at: string | null;
   clinic_type: string | null;
   key_treatments: string;
+  youtube_channel_id: string | null; youtube_channel_title: string | null;
+  ig_user_id: string | null; ig_username: string | null; ig_token_enc: string | null; ig_token_expires_at: string | null;
+  threads_user_id: string | null; threads_username: string | null; threads_token_enc: string | null; threads_token_expires_at: string | null;
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

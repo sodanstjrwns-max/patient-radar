@@ -31,7 +31,9 @@ export type Bindings = {
   SIGNAL_API_URL?: string;
   SIGNAL_API_KEY?: string;
   // 메일
-  FORM_API_URL?: string; // 기본 https://form.patientfunnel.kr
+  FORM_API_URL?: string;
+  YOUTUBE_API_KEY?: string;
+  META_APP_ID?: string; META_APP_SECRET?: string; THREADS_APP_ID?: string; THREADS_APP_SECRET?: string; // 기본 https://form.patientfunnel.kr
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
   OPS_EMAIL?: string;
@@ -53,6 +55,9 @@ export function platformAvailability(env: Bindings) {
     kakao: !!env.KAKAO_REST_KEY,
     signal: !!(env.SIGNAL_API_URL && env.SIGNAL_API_KEY),
     mail: !!env.RESEND_API_KEY,
+    youtube: !!env.YOUTUBE_API_KEY,
+    instagram: !!(env.META_APP_ID && env.META_APP_SECRET),
+    threads: !!(env.THREADS_APP_ID && env.THREADS_APP_SECRET),
     searchVolume: !!(env.NAVER_SEARCHAD_KEY && env.NAVER_SEARCHAD_SECRET && env.NAVER_SEARCHAD_CUSTOMER),
   };
 }

@@ -70,6 +70,7 @@ export function Step1({ h, prefill, error }: { h: { name: string; plan: string }
           <label>주력 진료·시술 (쉼표, 최대 6개) <input name="treatments" value={prefill.treatments} maxlength={200} /></label>
           <label>네이버 플레이스 주소 또는 ID (선택 · <i>m.place.naver.com/hospital/1541238930</i> 형태) <input name="naver_place_id" value={prefill.naver_place_id} maxlength={200} /></label>
           <label>홈페이지 주소 (선택 · 구글 순위 매칭에 사용) <input name="website_url" value={prefill.website_url} maxlength={200} placeholder="https://" /></label>
+          <label>유튜브 채널 (선택 · 콘텐츠 도달 측정) <input name="youtube" maxlength={200} placeholder="https://www.youtube.com/@..." /></label>
           <button class="button button-primary" type="submit">다음 · 키워드 만들기 →</button>
         </form>
       </section>
@@ -159,6 +160,7 @@ export type DashboardData = {
   platforms: { key: string; label: string; score: number | null; prev: number | null; sov: number | null; state: "ok" | "unmeasured" | "needs_key" | "plan" }[];
   matrix: { keyword: string; volume: number | null; volumeLow?: boolean; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
   hasVolume: boolean;
+  content: { platform: string; label: string; followers: number | null; prevFollowers: number | null; views: number | null; prevViews: number | null; date: string; manual: boolean; top: { title: string; views: number }[] }[];
   arrivals: { week_start: string; first_visits: number; answered: number; search: number; naver: number; google: number; ai: number; sns: number; content: number; referral: number; sign: number; nearby: number; other: number; coverage: number | null }[];
   opportunity: { pool: number; platforms: { key: string; label: string; captured: number; coverage: number | null; prev: number | null }[]; lost: LostItem[]; competitors: { name: string; captured: number; coverage: number | null }[]; selfCaptured: number } | null;
   matrixPlatforms: { key: string; label: string }[];
@@ -281,6 +283,17 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
               </table></div>
             </section>
           ) : null}
+          {d.content.length ? (
+            <section class="card">
+              <div class="card-head"><h2>콘텐츠 도달 <small class="muted">앞단 콘텐츠 · 최근 30일</small></h2><a href="/app/settings#content" class="button button-small button-outline">계정 관리</a></div>
+              <div class="platform-cards">{d.content.map((x) => (
+                <div class="card pcard ok"><p class="eyebrow">{x.label}{x.manual ? " · 수동" : ""}</p>
+                  <div class="pscore"><span class="num">{x.views == null ? "—" : x.views.toLocaleString()}</span>{delta(x.views, x.prevViews)}</div><p class="muted small">30일 조회·도달</p>
+                  <p class="small">구독·팔로워 <b>{x.followers?.toLocaleString() ?? "—"}</b> {delta(x.followers, x.prevFollowers)}</p>
+                  {x.top.length ? <ul class="plain small muted">{x.top.slice(0, 3).map((t) => <li>{t.title.slice(0, 28)} · {t.views.toLocaleString()}</li>)}</ul> : null}
+                </div>))}</div>
+            </section>
+          ) : null}
           {d.arrivals.length ? (
             <section class="card">
               <div class="card-head"><h2>실제 신환 경로 <small class="muted">페이션트 폼 접수 문진 · 주 단위 건수</small></h2></div>
@@ -302,7 +315,7 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
 }
 
 /* ───────── 설정 ───────── */
-export function Settings({ h, hospital, keywords, competitors, settings, users, limits, platform, flash }: {
+export function Settings({ h, hospital, keywords, competitors, settings, users, limits, platform, flash, social, err }: {
   h: { name: string; plan: string };
   hospital: { name: string; aliases: string; clinic_type: string; region: string; treatments: string; naver_place_id: string; website_url: string };
   keywords: { id: number; text: string; is_active: number; source: string; monthly_pc?: number | null; monthly_mobile?: number | null; volume_low?: number }[];
@@ -312,9 +325,12 @@ export function Settings({ h, hospital, keywords, competitors, settings, users, 
   limits: (typeof PLAN_LIMITS)[Plan];
   platform: { naver: string; google: string; kakao: string; signal: string; mail: string };
   flash?: string | null;
+  err?: string | null;
+  social: { youtube: { input: string; title: string | null; enabled: boolean }; instagram: { username: string | null; enabled: boolean }; threads: { username: string | null; enabled: boolean }; latest: Record<string, { followers: number | null; views: number | null; date: string; manual?: boolean }> };
 }) {
   return (
     <AppLayout title="설정" hospital={h} active="/app/settings" flash={flash}>
+      {err ? <div class="flash error">{err}</div> : null}
       <section class="card">
         <h2>병원</h2>
         <form method="post" action="/app/settings/hospital" class="form two-col">
@@ -344,6 +360,27 @@ export function Settings({ h, hospital, keywords, competitors, settings, users, 
           <label>추가 (한 줄에 하나 · 이름 뒤에 <i>|플레이스ID</i> 를 붙이면 정확히 매칭)<textarea name="extra" rows={2} placeholder="더보스톤치과병원|672785300"></textarea></label>
           <div><button class="button button-primary" type="submit">경쟁사 저장</button></div>
         </form>
+      </section>
+      <section class="card" id="content">
+        <h2>콘텐츠 계정 <small class="muted">3층 · 콘텐츠 도달(구독자·팔로워·30일 조회수)</small></h2>
+        <div class="grid-2">
+          <form method="post" action="/app/settings/youtube" class="form">
+            <label>유튜브 채널 주소 (예: youtube.com/@채널핸들){social.youtube.title ? <small class="vol-badge">연결됨 · {social.youtube.title}</small> : null}<input name="channel" value={social.youtube.input} placeholder="https://www.youtube.com/@..." /></label>
+            <div class="row"><button class="button button-primary button-small" type="submit" disabled={!social.youtube.enabled}>{social.youtube.enabled ? "저장" : "운영자 키 필요"}</button>{social.latest.youtube ? <span class="muted small">구독자 {social.latest.youtube.followers?.toLocaleString() ?? "—"} · 30일 조회 {social.latest.youtube.views?.toLocaleString() ?? "—"} ({social.latest.youtube.date})</span> : null}</div>
+          </form>
+          <div class="form">
+            <div><b>인스타그램</b> {social.instagram.username ? <><span class="vol-badge">연결됨 · @{social.instagram.username}</span> <form method="post" action="/app/disconnect/instagram" class="inline"><button class="linklike">연결 해제</button></form></> : <a class={"button button-small " + (social.instagram.enabled ? "button-primary" : "button-outline")} href="/app/connect/instagram">{social.instagram.enabled ? "연결하기" : "Meta 앱 심사 후 열림"}</a>}
+              {social.latest.instagram ? <p class="muted small">팔로워 {social.latest.instagram.followers?.toLocaleString() ?? "—"} · 30일 도달/조회 {social.latest.instagram.views?.toLocaleString() ?? "—"} ({social.latest.instagram.date}{social.latest.instagram.manual ? " · 수동" : ""})</p> : null}</div>
+            <div><b>스레드</b> {social.threads.username ? <><span class="vol-badge">연결됨 · @{social.threads.username}</span> <form method="post" action="/app/disconnect/threads" class="inline"><button class="linklike">연결 해제</button></form></> : <a class={"button button-small " + (social.threads.enabled ? "button-primary" : "button-outline")} href="/app/connect/threads">{social.threads.enabled ? "연결하기" : "Meta 앱 심사 후 열림"}</a>}
+              {social.latest.threads ? <p class="muted small">팔로워 {social.latest.threads.followers?.toLocaleString() ?? "—"} · 30일 조회 {social.latest.threads.views?.toLocaleString() ?? "—"} ({social.latest.threads.date}{social.latest.threads.manual ? " · 수동" : ""})</p> : null}</div>
+            <details><summary class="muted small">연결 전 수동 입력 (인사이트 화면 숫자를 주 1회 옮겨 적기)</summary>
+              <form method="post" action="/app/settings/social-manual" class="form two-col" style="margin-top:8px">
+                <label>인스타 팔로워<input name="instagram_followers" inputmode="numeric" /></label><label>인스타 30일 도달<input name="instagram_reach" inputmode="numeric" /></label>
+                <label>스레드 팔로워<input name="threads_followers" inputmode="numeric" /></label><label>스레드 30일 조회<input name="threads_views" inputmode="numeric" /></label>
+                <div><button class="button button-small button-outline" type="submit">이번 주 값 저장</button></div>
+              </form></details>
+          </div>
+        </div>
       </section>
       <section class="grid-2">
         <div class="card">

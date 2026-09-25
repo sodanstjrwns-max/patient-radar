@@ -7,6 +7,7 @@ import { Landing, Pricing, Legal, StatusPage } from "./views";
 import auth from "./routes/auth";
 import appRoutes from "./routes/app";
 import api from "./routes/cron";
+import social from "./routes/social";
 
 const app = new Hono<{ Bindings: Bindings }>();
 app.use("*", secureHeaders({
@@ -38,6 +39,7 @@ app.get("/favicon.ico", (c) => c.body(null, 204));
 app.get("/google17dbe9a80407755e.html", (c) => c.text("google-site-verification: google17dbe9a80407755e.html"));
 
 app.route("/", auth);
+app.route("/", social);
 app.route("/", appRoutes);
 app.route("/", api);
 

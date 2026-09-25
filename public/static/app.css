@@ -42,3 +42,4 @@
 .kw-item .kw-text{flex:1}.vol-badge{font-size:11px;color:var(--teal);border:1px solid rgba(96,223,197,.4);border-radius:6px;padding:0 5px;white-space:nowrap}
 .opp-top{display:grid;grid-template-columns:1fr 1.2fr;gap:24px;align-items:center;margin-bottom:18px}.opp h3{font-size:15px;margin:12px 0 8px}.opp .grid-2{gap:24px}@media (max-width:760px){.opp-top{grid-template-columns:1fr}}
 .actions>li{margin-bottom:10px}.actions ul{margin:4px 0 0 0;padding-left:18px;color:var(--muted);font-size:14px}.actions ul li{list-style:disc;margin:2px 0}
+.flash.error{border-color:#ff8a80;color:#ff8a80;background:rgba(255,138,128,.08)}details summary{cursor:pointer}

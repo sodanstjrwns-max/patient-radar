@@ -16,6 +16,9 @@ import { fetchVolumes } from "../collectors/naver-searchad";
 import { computeOpportunity, type KeywordRow } from "./opportunity";
 import { prescribe } from "./playbook";
 import { fetchArrivalStats } from "../collectors/form";
+import { collectYoutube } from "../collectors/youtube";
+import { collectInstagram, collectThreads } from "../collectors/meta";
+import { decryptToken } from "./crypto";
 import { localityCandidates } from "./keywords";
 import type { HospitalRow } from "./session";
 
@@ -228,6 +231,8 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
       try { signalScore = (await fetchSignalScore(h.ps_hospital_id!, { SIGNAL_API_URL: env.SIGNAL_API_URL!, SIGNAL_API_KEY: env.SIGNAL_API_KEY! }, fetchImpl)).score; }
       catch (e) { errors.push(`signal ${String(e).slice(0, 60)}`); }
     }
+    // ── 콘텐츠 도달(3층): 유튜브·인스타·스레드 스냅샷
+    try { const r = await syncSocial(env, h, fetchImpl); for (const line of r) log(line); } catch (e) { errors.push(`social ${String(e).slice(0, 60)}`); }
     // ── 페이션트 폼 내원경로 반입(병원별 키가 있을 때, 최근 8주)
     try { await syncArrivals(env, h.id, fetchImpl); } catch (e) { errors.push(`form ${String(e).slice(0, 60)}`); }
     const { platforms, total } = await computeWeeklyScores(db, h.id, runId, week, signalScore);
@@ -366,4 +371,25 @@ export async function syncArrivals(env: Bindings, hospitalId: number, fetchImpl:
   await env.DB.batch(weeks.map((w) => env.DB.prepare("INSERT OR REPLACE INTO weekly_arrivals (hospital_id, week_start, first_visits, answered, declined, unanswered, groups, primary_paths, fetched_at) VALUES (?,?,?,?,?,?,?,?,?)")
     .bind(hospitalId, w.week_start, w.first_visits, w.answered, w.declined, w.unanswered, JSON.stringify(w.groups || {}), JSON.stringify(w.primary || {}), kstIso())));
   return { weeks: weeks.length };
+}
+
+/** 유튜브(공개 API)·인스타·스레드(OAuth 연결분) 30일 스냅샷 → reputation_snapshots(platform youtube|instagram|threads) */
+export async function syncSocial(env: Bindings, h: HospitalRow, fetchImpl: typeof fetch = fetch): Promise<string[]> {
+  const out: string[] = []; const date = kstDate();
+  const put = (platform: string, followers: number | null, views30d: number | null, detail: Record<string, unknown>) =>
+    env.DB.prepare("INSERT OR REPLACE INTO reputation_snapshots (hospital_id, entity_type, entity_id, platform, snapshot_date, review_count, blog_review_count, rating, save_count, followers, views_30d, detail, created_at) VALUES (?, 'self', NULL, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?)")
+      .bind(h.id, platform, date, followers, views30d, JSON.stringify(detail), kstIso()).run();
+  if (env.YOUTUBE_API_KEY && h.youtube_channel_id) {
+    try { const y = await collectYoutube(h.youtube_channel_id, { YOUTUBE_API_KEY: env.YOUTUBE_API_KEY }, fetchImpl); await put("youtube", y.subscribers, y.views30d, { title: y.title, totalViews: y.totalViews, videoCount: y.videoCount, uploads30d: y.uploads30d, likes30d: y.likes30d, comments30d: y.comments30d, top: y.top }); out.push(`유튜브 구독자 ${y.subscribers ?? "—"} · 30일 조회 ${y.views30d.toLocaleString()} (영상 ${y.uploads30d}편)`); }
+    catch (e) { out.push(`유튜브 오류 ${String(e).slice(0, 40)}`); }
+  }
+  if (h.ig_user_id && h.ig_token_enc && env.PS_SSO_SECRET) {
+    try { const ig = await collectInstagram(h.ig_user_id, await decryptToken(env.PS_SSO_SECRET, h.ig_token_enc), fetchImpl); await put("instagram", ig.followers, ig.views30d ?? ig.reach30d, { username: h.ig_username, mediaCount: ig.mediaCount, reach30d: ig.reach30d, views30d: ig.views30d, posts30d: ig.posts30d, top: ig.top }); out.push(`인스타그램 팔로워 ${ig.followers ?? "—"} · 30일 도달 ${ig.reach30d ?? "—"}`); }
+    catch (e) { out.push(`인스타그램 오류 ${String(e).slice(0, 40)}`); }
+  }
+  if (h.threads_user_id && h.threads_token_enc && env.PS_SSO_SECRET) {
+    try { const th = await collectThreads(h.threads_user_id, await decryptToken(env.PS_SSO_SECRET, h.threads_token_enc), fetchImpl); await put("threads", th.followers, th.views30d, { username: h.threads_username, likes30d: th.likes30d, posts30d: th.posts30d }); out.push(`스레드 팔로워 ${th.followers ?? "—"} · 30일 조회 ${th.views30d ?? "—"}`); }
+    catch (e) { out.push(`스레드 오류 ${String(e).slice(0, 40)}`); }
+  }
+  return out;
 }
