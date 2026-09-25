@@ -35,7 +35,7 @@ async function reviews(env: Env, hospital?: number) {
 }
 export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    if (event.cron === "30 23 * * 0") ctx.waitUntil(reports(env));
+    if (event.cron === "30 23 * * SUN") ctx.waitUntil(reports(env));
     else if (event.cron === "0 19 * * *") ctx.waitUntil(reviews(env));
     else ctx.waitUntil(measure(env));
   },
