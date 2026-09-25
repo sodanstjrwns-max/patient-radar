@@ -14,7 +14,7 @@ export type ReportContent = {
   reviewNote?: string | null;
   content?: { label: string; followers: number | null; views: number | null }[];
   arrivals?: { week_start: string; first_visits: number; search: number; ai: number; sns: number; content: number; referral: number }[];
-  opportunity?: { pool: number; captured: number; coverage: number | null; prevCoverage: number | null; lost: { keyword: string; volume: number; rank: number | null; lost: number; gainNext: number; nextRank?: number; above: string[]; actions?: string[] }[]; competitors: { name: string; captured: number }[] } | null;
+  opportunity?: { pool: number; captured: number; coverage: number | null; prevCoverage: number | null; lost: { keyword: string; volume: number; rank: number | null; lost: number; gainNext: number; nextRank?: number; above: string[]; actions?: { code: string; text: string; evidence: string; gain: number }[] }[]; competitors: { name: string; captured: number }[] } | null;
 };
 export const PLATFORM_LABEL: Record<string, string> = { naver_serp: "네이버 통합검색", naver_place: "네이버 플레이스", google: "구글", kakao: "카카오맵", signal_ai: "AI (시그널)", total: "온라인 가시성" };
 
@@ -100,7 +100,7 @@ export function reportToText(r: ReportContent): string {
     l.push(""); l.push(`검색 기회 (네이버 플레이스): 월 ${o.pool.toLocaleString()}회 검색 중 우리가 보인 기회 ${o.captured.toLocaleString()}회 (${o.coverage != null ? Math.round(o.coverage * 100) + "%" : "—"}${o.prevCoverage != null && o.coverage != null ? `, 지난주 ${Math.round(o.prevCoverage * 100)}%` : ""})`);
     l.push("놓친 기회 순위");
     for (const x of o.lost) l.push(`- ${x.keyword} · 월 ${x.volume.toLocaleString()}회 · 우리 ${x.rank ?? "미노출"}${x.rank ? "위" : ""} · 놓침 ${x.lost.toLocaleString()}회${x.gainNext > 0 ? ` · 한 계단 오르면 +${x.gainNext.toLocaleString()}` : ""}${x.above.length ? ` · 위: ${x.above.join(", ")}` : ""}`);
-    for (const x of o.lost.slice(0, 3)) if (x.actions?.length) { l.push(`  → ${x.keyword}: ${x.actions[0]}`); }
+    for (const x of o.lost.slice(0, 3)) if (x.actions?.length) { l.push(`  → ${x.keyword}: ${x.actions[0].text} (근거: ${x.actions[0].evidence})`); }
     if (r.reviewNote) { l.push(""); l.push("리뷰: " + r.reviewNote); }
     if (r.content?.length) { l.push(""); l.push("콘텐츠 도달 (최근 30일): " + r.content.map((x) => `${x.label} 구독·팔로워 ${x.followers?.toLocaleString() ?? "—"} · 조회 ${x.views?.toLocaleString() ?? "—"}`).join(" / ")); }
     if (r.arrivals?.length) { l.push(""); l.push("실제 신환 경로 (페이션트 폼, 최근 주)"); for (const a of r.arrivals) l.push(`- ${a.week_start} 주: 신환 ${a.first_visits} · 검색 ${a.search} · AI ${a.ai} · SNS ${a.sns} · 콘텐츠 ${a.content} · 소개 ${a.referral}`); }

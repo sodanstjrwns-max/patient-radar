@@ -78,13 +78,16 @@ export function parsePlaceCards(html: string): SerpPlaceCard[] {
     const id = m[1];
     if (adSeen.has(id)) continue;
     adSeen.add(id);
-    // 광고 카드 이름: 같은 id 의 data-title 을 찾는다
-    const t = new RegExp(
+    // 광고 카드 이름: 그 id 의 목록 링크(ader 리다이렉트, clid=list) 안 첫 span 이 상호 (2026-09-26 실측). 없으면 옛 data-title 방식
+    const t2 = new RegExp(
+      `href="https://ader\\.naver\\.com/[^"]*%2F${id}%3Fentry%3Dpll%26from%3DPLACE_AD[^"]*clid=list"[^>]*>\\s*<span[^>]*>([^<]{1,60})</span>`,
+    ).exec(html);
+    const t = t2 ? null : new RegExp(
       `data-title="([^"]{1,80})"[^>]*data-line-title="[^"]*"[\\s\\S]{0,4000}?${id}`,
     ).exec(html);
     cards.push({
       placeId: id,
-      name: t ? stripTags(t[1]).split(" ")[0] : "",
+      name: t2 ? stripTags(t2[1]) : t ? stripTags(t[1]).split(" ")[0] : "",
       isAd: true,
       position: 0,
     });

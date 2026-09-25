@@ -43,7 +43,7 @@ export type GooglePlacesResult = {
 };
 
 export async function collectGooglePlaces(keyword: string, entities: (Entity & { googlePlaceId?: string | null })[], env: PlacesEnv, fetchImpl: typeof fetch = fetch): Promise<GooglePlacesResult> {
-  const res = await fetchImpl("https://places.googleapis.com/v1/places:searchText", {
+  const call = () => fetchImpl("https://places.googleapis.com/v1/places:searchText", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -53,6 +53,8 @@ export async function collectGooglePlaces(keyword: string, entities: (Entity & {
     body: JSON.stringify({ textQuery: keyword, languageCode: "ko", regionCode: "KR", pageSize: 10 }),
     signal: AbortSignal.timeout(15000),
   });
+  let res = await call();
+  if (res.status === 429) { await new Promise((r) => setTimeout(r, 2500)); res = await call(); } // 분당 한도면 한 번 더, 일일 한도면 그대로 실패
   if (!res.ok) throw new Error(`GOOGLE_PLACES_HTTP_${res.status}`);
   const j = (await res.json()) as { places?: { id: string; displayName?: { text: string }; rating?: number; userRatingCount?: number }[] };
   const places = (j.places || []).map((p, i) => ({ id: p.id, name: p.displayName?.text || "", rating: p.rating ?? null, ratingCount: p.userRatingCount ?? null, position: i + 1 }));

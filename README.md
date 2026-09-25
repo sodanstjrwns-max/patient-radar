@@ -51,6 +51,8 @@ cd cron-worker && npx wrangler deploy --config wrangler.jsonc
 
 ## 규칙
 
+- 2026-09-26 행동·신뢰·신호: 처방은 code·text·evidence 객체(playbook.ts)이고 evidence 없는 인사이트·처방은 렌더하지 않는다. 처방 실행은 prescriptions(했음→baseline→21일 뒤 판정, 사라지면 resolved). 증거는 naver_serp self detail.block(전체 블록)과 `/app/evidence/:runId/:keywordId`. 플레이스 완성도는 페이지 상태값만(네이버 MissingInfo 플래그는 쓰지 않음). 유튜브 검색 노출은 observations platform `youtube`(점수엔 미포함). 새 경쟁사 후보는 alerts `new_competitor:*`(추가/무시, resolved_at). 배포 직후 수동 run 은 옛 코드에 걸릴 수 있으니 static 마커로 전파 확인 후 실행.
+
 - 노출 확률 곡선의 기준은 "첫 화면"이 아니라 통합검색 **플레이스 블록**(키워드별 자연 카드 수 실측, detail.blockSize). 블록 안 100/85/75/65/55%, 블록 밖 15%, 10위 밖 5%, 다른 섹션 10%(`opportunity.ts`). 곡선·처방 규칙을 바꾸면 `/admin` 「재계산」으로 마지막 run 의 기회·처방을 재수집 없이 갱신한다. 처방의 순위 요인은 "통설"로 표기(네이버 공개 기준 아님). 2026-09-25 원장 지적("5위면 1페이지")으로 정정.
 - 환자 PII 없음. 미노출도 저장(shown=0, rank NULL). 미측정은 0점이 아니라 분모 제외. 거짓 200 금지.
 - 대시보드·리포트·공급 API는 `weekly_scores`만 읽고, 관측치는 최신 run 1회분만 본다.

@@ -22,6 +22,13 @@ export async function resolveChannel(input: string, env: YoutubeEnv, fetchImpl: 
   const it = r.items?.[0]; return it ? { id: it.id, title: it.snippet.title } : null;
 }
 
+/** 유튜브 검색 노출: 키워드 검색 상위 20개 영상 중 우리 채널 영상의 첫 순위(없으면 null). 검색 1회 = 100유닛 */
+export async function youtubeSearchRank(keyword: string, channelIds: string[], env: YoutubeEnv, fetchImpl: typeof fetch = fetch): Promise<{ rank: number | null; channelId: string | null; videoTitle: string | null; top: { channel: string; title: string }[] }> {
+  const r = await get<{ items?: { id: { videoId?: string }; snippet: { channelId: string; channelTitle: string; title: string } }[] }>(env, "search", { part: "snippet", q: keyword, type: "video", maxResults: "20", regionCode: "KR", relevanceLanguage: "ko" }, fetchImpl);
+  const items = (r.items || []).filter((i) => i.id?.videoId);
+  const idx = items.findIndex((i) => channelIds.includes(i.snippet.channelId));
+  return { rank: idx >= 0 ? idx + 1 : null, channelId: idx >= 0 ? items[idx].snippet.channelId : null, videoTitle: idx >= 0 ? items[idx].snippet.title : null, top: items.slice(0, 5).map((i) => ({ channel: i.snippet.channelTitle, title: i.snippet.title })) };
+}
 export type YoutubeSnapshot = { channelId: string; title: string; subscribers: number | null; totalViews: number | null; videoCount: number | null; uploads30d: number; views30d: number; likes30d: number; comments30d: number; top: { id: string; title: string; views: number; publishedAt: string }[] };
 export async function collectYoutube(channelId: string, env: YoutubeEnv, fetchImpl: typeof fetch = fetch): Promise<YoutubeSnapshot> {
   const ch = (await get<ChannelResp>(env, "channels", { part: "snippet,statistics,contentDetails", id: channelId }, fetchImpl)).items?.[0];

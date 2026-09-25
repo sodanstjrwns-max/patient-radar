@@ -12,8 +12,8 @@ import { htmlSerp } from "../collectors/naver-html";
 import { collectNaverApi } from "../collectors/naver-api";
 import { buildWeeklyReport, PLATFORM_LABEL } from "../lib/report";
 import { buildInsights } from "../lib/insights";
-import { kstIso } from "../lib/time";
-import { Step1, Step2, Step3, FirstRun, Dashboard, Settings, ReportList, ReportView, type DashboardData } from "../views-app";
+import { kstIso, kstDate } from "../lib/time";
+import { Step1, Step2, Step3, FirstRun, Dashboard, Settings, ReportList, ReportView, Evidence, type DashboardData } from "../views-app";
 
 const app = new Hono<AppEnv>();
 app.use("/app", requireSession);
@@ -241,7 +241,7 @@ app.get("/app", async (c) => {
   const weeks = (await db.prepare("SELECT DISTINCT week_start FROM weekly_scores WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 2").bind(h.id).all()).results as { week_start: string }[];
   const week = weeks[0]?.week_start ?? null;
   const prevWeek = weeks[1]?.week_start ?? null;
-  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, history: { runs: [], rankTable: [], dates: [], reviews: [], content: [], changes: [], prevDate: null }, insights: [], reviews: null, content: [], arrivals: [], opportunity: null };
+  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, history: { runs: [], rankTable: [], dates: [], reviews: [], content: [], changes: [], prevDate: null }, insights: [], reviews: null, content: [], arrivals: [], opportunity: null, measuredAt: null, runId: null, weekPick: null, rx: { open: [], done: [], checked: [] }, goals: [], ads: null, completeness: null, newCompetitors: [] };
   if (week) {
     const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
     const prev = prevWeek ? ((await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; score: number }[]) : [];
@@ -257,20 +257,35 @@ app.get("/app", async (c) => {
     };
     d.platforms = ["naver_serp", "naver_place", "google", "kakao", "signal_ai"].map((key) => { const r = cur.find((x) => x.platform === key); return { key, label: PLATFORM_LABEL[key], score: r?.score ?? null, prev: pm[key] ?? null, sov: r?.sov ?? null, state: state(key) }; });
     // 최신 run 관측치 → 매트릭스·경쟁사 점수
-    const run = await db.prepare("SELECT id FROM crawl_runs WHERE hospital_id = ? AND status IN ('completed','blocked') ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number }>();
+    const run = await db.prepare("SELECT id, run_date, started_at, finished_at FROM crawl_runs WHERE hospital_id = ? AND status IN ('completed','blocked') ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number; run_date: string; started_at: string | null; finished_at: string | null }>();
     if (run) {
-      const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, o.detail, k.text, k.monthly_pc, k.monthly_mobile, k.volume_low FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? ORDER BY k.sort_order, k.id").bind(run.id).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; text: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number }[];
-      const plats = ["naver_place", "naver_serp", "google_serp", "google_business", "kakao_map"].filter((p) => obs.some((o) => o.platform === p));
-      d.matrixPlatforms = plats.map((p) => ({ key: p, label: p === "google_serp" ? "구글 검색" : p === "google_business" ? "구글 비즈니스" : p === "kakao_map" ? "카카오맵" : PLATFORM_LABEL[p] }));
+      d.runId = run.id; d.measuredAt = (run.started_at || run.finished_at || run.run_date).slice(0, 16).replace("T", " ");
+      const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, o.detail, k.id AS kid, k.text, k.monthly_pc, k.monthly_mobile, k.volume_low, k.target_rank, k.goal_base_rank, k.goal_set_at FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? ORDER BY k.sort_order, k.id").bind(run.id).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; kid: number; text: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number; target_rank: number | null; goal_base_rank: number | null; goal_set_at: string | null }[];
+      const plats = ["naver_place", "naver_serp", "google_serp", "google_business", "kakao_map", "youtube"].filter((p) => obs.some((o) => o.platform === p));
+      d.matrixPlatforms = plats.map((p) => ({ key: p, label: p === "google_serp" ? "구글 검색" : p === "google_business" ? "구글 비즈니스" : p === "kakao_map" ? "카카오맵" : p === "youtube" ? "유튜브 검색" : PLATFORM_LABEL[p] }));
       const byKw = new Map<string, DashboardData["matrix"][number]>();
       const compScore: Record<string, number[]> = {}; const selfScores: number[] = [];
+      const adRows: Record<string, { name: string; placeId: string | null }[]> = {}; const entNames: Record<string, string> = { self: h.name };
       for (const o of obs) {
-        let row = byKw.get(o.text); if (!row) { const vol = o.monthly_pc == null && o.monthly_mobile == null ? null : (o.monthly_pc ?? 0) + (o.monthly_mobile ?? 0); if (vol != null) d.hasVolume = true; row = { keyword: o.text, volume: vol, volumeLow: !!o.volume_low, cells: {}, competitors: {} }; byKw.set(o.text, row); }
+        let row = byKw.get(o.text); if (!row) { const vol = o.monthly_pc == null && o.monthly_mobile == null ? null : (o.monthly_pc ?? 0) + (o.monthly_mobile ?? 0); if (vol != null) d.hasVolume = true; row = { keyword: o.text, keywordId: o.kid, volume: vol, volumeLow: !!o.volume_low, cells: {}, competitors: {}, range: null, goal: o.target_rank ? { target: o.target_rank, base: o.goal_base_rank, setAt: o.goal_set_at } : null }; byKw.set(o.text, row); }
         const det = (() => { try { return JSON.parse(o.detail || "{}"); } catch { return {}; } })();
-        if (o.entity_type === "self") { row.cells[o.platform] = { rank: o.rank, shown: !!o.shown, ad: !!det.placeAd }; if (o.platform === "naver_place" || o.platform === "google_serp" || o.platform === "google_business" || o.platform === "kakao_map") selfScores.push(obsScore(o.platform, o.shown, o.rank, det)); }
+        if (o.entity_type === "self") { row.cells[o.platform] = { rank: o.rank, shown: !!o.shown, ad: !!det.placeAd, note: o.platform === "youtube" && det.videoTitle ? String(det.videoTitle).slice(0, 40) : undefined }; if (o.platform === "naver_place" || o.platform === "google_serp" || o.platform === "google_business" || o.platform === "kakao_map") selfScores.push(obsScore(o.platform, o.shown, o.rank, det)); }
         else if (o.platform === "naver_place") { row.competitors[`c${o.entity_id}`] = { rank: o.rank, shown: !!o.shown }; (compScore[`c${o.entity_id}`] ||= []).push(obsScore(o.platform, o.shown, o.rank, det)); }
+        if (o.platform === "naver_serp" && o.entity_type === "self" && Array.isArray(det.block)) { const ads = (det.block as { name: string; placeId: string | null; ad: boolean }[]).filter((b) => b.ad); if (ads.length) adRows[o.text] = ads.map((b) => ({ name: b.name, placeId: b.placeId })); }
       }
       d.matrix = [...byKw.values()];
+      // 경쟁사 광고 키워드 표 (통합검색 플레이스 광고 카드에 이름이 있는 곳)
+      const compsForAds = (await db.prepare("SELECT id, name FROM competitors WHERE hospital_id = ? AND is_active = 1 ORDER BY id").bind(h.id).all()).results as { id: number; name: string }[];
+      for (const x of compsForAds) entNames[`c${x.id}`] = x.name;
+      if (Object.keys(adRows).length) {
+        const compIds = new Map(compsForAds.map((x) => [x.id, x.name])); const compPids = new Map<string, string>();
+        for (const x of (await db.prepare("SELECT name, naver_place_id FROM competitors WHERE hospital_id = ? AND is_active = 1 AND naver_place_id IS NOT NULL").bind(h.id).all()).results as { name: string; naver_place_id: string }[]) compPids.set(x.naver_place_id, x.name);
+        void compIds; void entNames;
+        const nm = (s: string) => s.replace(/\s/g, "");
+        d.ads = { rows: Object.entries(adRows).map(([keyword, ads]) => ({ keyword, advertisers: ads.map((a) => ({ name: a.name || "(이름 미확인)", placeId: a.placeId, self: !!(h.naver_place_id && a.placeId === h.naver_place_id) || (!!a.name && nm(a.name).includes(nm(h.name).slice(0, 4))), tracked: !!(a.placeId && compPids.has(a.placeId)) || compsForAds.some((c) => a.name && nm(a.name).includes(nm(c.name))) })) })) };
+      }
+      // 목표 진행률
+      d.goals = d.matrix.filter((r) => r.goal).map((r) => { const cur = r.cells.naver_place?.rank ?? null; const g = r.goal!; const v = (x: number | null) => (x == null ? (r.cells.naver_place?.shown ? 12 : 15) : x); const total = v(g.base) - g.target; const done = v(g.base) - v(cur); return { keywordId: r.keywordId, keyword: r.keyword, target: g.target, base: g.base, current: cur, setAt: g.setAt, progress: total <= 0 ? (v(cur) <= g.target ? 1 : 0) : Math.max(0, Math.min(1, done / total)), reached: v(cur) <= g.target }; });
       d.selfScore = selfScores.length ? Math.round((selfScores.reduce((a, b) => a + b, 0) / selfScores.length) * 10) / 10 : null;
       const comps = (await db.prepare("SELECT id, name FROM competitors WHERE hospital_id = ? AND is_active = 1 ORDER BY id").bind(h.id).all()).results as { id: number; name: string }[];
       d.competitors = comps.map((x) => { const s = compScore[`c${x.id}`]; return { id: x.id, name: x.name, score: s?.length ? Math.round((s.reduce((a, b) => a + b, 0) / s.length) * 10) / 10 : null }; });
@@ -327,7 +342,25 @@ app.get("/app", async (c) => {
       const cov = (await db.prepare("SELECT week_start, coverage FROM weekly_opportunity WHERE hospital_id = ? AND platform = 'naver_place'").bind(h.id).all()).results as { week_start: string; coverage: number }[];
       d.arrivals = arr.map((a) => { const g = JSON.parse(a.groups || "{}"), p = JSON.parse(a.primary_paths || "{}"); return { week_start: a.week_start, first_visits: a.first_visits, answered: a.answered, search: g.search || 0, naver: p["search.naver"] || 0, google: p["search.google"] || 0, ai: g.ai || 0, sns: g.sns || 0, content: g.content || 0, referral: g.referral || 0, sign: g.sign || 0, nearby: g.nearby || 0, other: (g.other || 0) + (g.agreement || 0), coverage: cov.find((c) => c.week_start === a.week_start)?.coverage ?? null }; });
     }
-    d.alerts = (await db.prepare("SELECT severity, message, created_at FROM alerts WHERE hospital_id = ? ORDER BY id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["alerts"];
+    // 처방 실행 추적
+    const rxRows = (await db.prepare("SELECT id, keyword, code, text, evidence, gain, status, first_seen, last_seen, done_at, check_after, baseline, result FROM prescriptions WHERE hospital_id = ? AND status IN ('open','done','checked') ORDER BY gain DESC, id").bind(h.id).all()).results as { id: number; keyword: string; code: string; text: string; evidence: string; gain: number; status: string; first_seen: string; last_seen: string; done_at: string | null; check_after: string | null; baseline: string | null; result: string | null }[];
+    const pj = (s: string | null) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+    const today = kstDate();
+    for (const r of rxRows) {
+      const item = { id: r.id, keyword: r.keyword, code: r.code, text: r.text, evidence: r.evidence, gain: r.gain, status: r.status, firstSeen: r.first_seen, doneAt: r.done_at, checkAfter: r.check_after, daysLeft: r.check_after ? Math.max(0, Math.ceil((Date.parse(r.check_after) - Date.parse(today)) / 86400_000)) : null, baseline: pj(r.baseline), result: pj(r.result) };
+      if (r.status === "open") d.rx.open.push(item); else if (r.status === "done") d.rx.done.push(item); else d.rx.checked.push(item);
+    }
+    d.weekPick = d.rx.open[0] ?? null; // 기대 이득(gain) 최대 = 이번 주 한 가지
+    // 플레이스 완성도 (최신 스냅샷의 completeness, 본원 + 경쟁사) + 30일 답글 비율
+    const compRows = (await db.prepare("SELECT entity_type, entity_id, detail FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place' AND snapshot_date = (SELECT MAX(snapshot_date) FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place' AND detail LIKE '%completeness%')").bind(h.id, h.id).all()).results as { entity_type: string; entity_id: number | null; detail: string }[];
+    if (compRows.length) {
+      const names: Record<string, string> = {}; for (const x of d.competitors) names[`c${x.id}`] = x.name;
+      const rows = compRows.map((r) => { const key = r.entity_type === "self" ? "self" : `c${r.entity_id}`; const c = (pj(r.detail) || {}).completeness; if (!c || (key !== "self" && !names[key])) return null; const rv = d.reviews?.rows.find((x) => (key === "self" ? x.self : x.entity === names[key])); return { entity: key === "self" ? h.name : names[key], self: key === "self", ...c, replied: rv ? rv.replied : null, analyzed: rv ? rv.analyzed : null }; }).filter(Boolean) as NonNullable<DashboardData["completeness"]>["rows"];
+      if (rows.length) d.completeness = { rows: rows.sort((a) => (a.self ? -1 : 1)) };
+    }
+    // 새 경쟁사 후보(미해결 경보)
+    d.newCompetitors = ((await db.prepare("SELECT id, detail FROM alerts WHERE hospital_id = ? AND code LIKE 'new_competitor:%' AND resolved_at IS NULL ORDER BY id DESC LIMIT 5").bind(h.id).all()).results as { id: number; detail: string }[]).map((a) => { const x = pj(a.detail) || {}; return { alertId: a.id, name: String(x.name || ""), placeId: x.placeId ? String(x.placeId) : null, keywords: Array.isArray(x.keywords) ? x.keywords.map(String) : [] }; }).filter((x) => x.name);
+    d.alerts = (await db.prepare("SELECT severity, message, created_at FROM alerts WHERE hospital_id = ? AND resolved_at IS NULL AND code NOT LIKE 'new_competitor:%' ORDER BY id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["alerts"];
     d.runs = (await db.prepare("SELECT run_date, status, kind, error FROM crawl_runs WHERE hospital_id = ? ORDER BY run_date DESC, id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["runs"];
   }
   // ── 추이·변화: 최근 run 최대 10개
@@ -344,11 +377,14 @@ app.get("/app", async (c) => {
     // 키워드 순위 표 (플레이스, run 별)
     if (runs.length) {
       const ids = runs.map((r) => r.id);
-      const rows = (await db.prepare(`SELECT o.run_id, o.rank, o.shown, k.text, (COALESCE(k.monthly_pc,0)+COALESCE(k.monthly_mobile,0)) AS vol, k.monthly_pc IS NULL AND k.monthly_mobile IS NULL AS novol FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.hospital_id = ? AND o.entity_type = 'self' AND o.platform = 'naver_place' AND o.run_id IN (${ids.map(() => "?").join(",")}) AND k.is_active = 1`).bind(h.id, ...ids).all()).results as { run_id: number; rank: number | null; shown: number; text: string; vol: number; novol: number }[];
-      const byKw = new Map<string, { volume: number | null; ranks: (number | null)[]; shown: boolean[] }>();
-      for (const r of rows) { let e = byKw.get(r.text); if (!e) { e = { volume: r.novol ? null : r.vol, ranks: ids.map(() => null), shown: ids.map(() => false) }; byKw.set(r.text, e); } const i = ids.indexOf(r.run_id); e.ranks[i] = r.rank; e.shown[i] = !!r.shown; }
+      const rows = (await db.prepare(`SELECT o.run_id, o.rank, o.shown, k.id AS kid, k.text, (COALESCE(k.monthly_pc,0)+COALESCE(k.monthly_mobile,0)) AS vol, k.monthly_pc IS NULL AND k.monthly_mobile IS NULL AS novol FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.hospital_id = ? AND o.entity_type = 'self' AND o.platform = 'naver_place' AND o.run_id IN (${ids.map(() => "?").join(",")}) AND k.is_active = 1`).bind(h.id, ...ids).all()).results as { run_id: number; rank: number | null; shown: number; kid: number; text: string; vol: number; novol: number }[];
+      const byKw = new Map<string, { keywordId: number; volume: number | null; ranks: (number | null)[]; shown: boolean[] }>();
+      for (const r of rows) { let e = byKw.get(r.text); if (!e) { e = { keywordId: r.kid, volume: r.novol ? null : r.vol, ranks: ids.map(() => null), shown: ids.map(() => false) }; byKw.set(r.text, e); } const i = ids.indexOf(r.run_id); e.ranks[i] = r.rank; e.shown[i] = !!r.shown; }
       const val = (x: number | null) => (x == null ? 99 : x);
-      d.history.rankTable = [...byKw.entries()].map(([keyword, e]) => { const n = e.ranks.length; const cur = e.ranks[n - 1], prev = n > 1 ? e.ranks[n - 2] : undefined; return { keyword, volume: e.volume, ranks: e.ranks, shown: e.shown, change: prev === undefined ? null : val(prev) - val(cur) }; }).sort((a, b) => (b.volume ?? -1) - (a.volume ?? -1));
+      d.history.rankTable = [...byKw.entries()].map(([keyword, e]) => { const n = e.ranks.length; const cur = e.ranks[n - 1], prev = n > 1 ? e.ranks[n - 2] : undefined; return { keyword, keywordId: e.keywordId, volume: e.volume, ranks: e.ranks, shown: e.shown, change: prev === undefined ? null : val(prev) - val(cur) }; }).sort((a, b) => (b.volume ?? -1) - (a.volume ?? -1));
+      d.history.runIds = ids;
+      // 측정 편차: 최근 4회 순위 범위 → 매트릭스에 표시
+      for (const m of d.matrix) { const e = byKw.get(m.keyword); if (!e) continue; const last = e.ranks.slice(-4).filter((x): x is number => x != null); if (last.length >= 2) m.range = { min: Math.min(...last), max: Math.max(...last), n: e.ranks.slice(-4).length }; }
     }
     // 리뷰 수 추이 (플레이스 방문자 리뷰, 본원·경쟁사)
     const rs = (await db.prepare("SELECT entity_type, entity_id, snapshot_date, review_count FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place' ORDER BY snapshot_date").bind(h.id).all()).results as { entity_type: string; entity_id: number | null; snapshot_date: string; review_count: number | null }[];
@@ -365,10 +401,26 @@ app.get("/app", async (c) => {
     if (cur && prevR) {
       d.history.prevDate = prevR.date;
       const ch = d.history.changes; const f = (v: number | null | undefined, dgt = 0) => (v == null ? "—" : v.toFixed(dgt));
-      if (cur.coverage.naver_place != null && prevR.coverage.naver_place != null) ch.push({ kind: "coverage", label: "네이버 플레이스 커버율", before: Math.round(prevR.coverage.naver_place * 100) + "%", after: Math.round(cur.coverage.naver_place * 100) + "%", delta: Math.round((cur.coverage.naver_place - prevR.coverage.naver_place) * 100), unit: "%p", good: cur.coverage.naver_place >= prevR.coverage.naver_place });
-      if (cur.total != null && prevR.total != null) ch.push({ kind: "score", label: "온라인 가시성 점수", before: f(prevR.total, 1), after: f(cur.total, 1), delta: Math.round((cur.total - prevR.total) * 10) / 10, unit: "점", good: cur.total >= prevR.total });
-      for (const k of ["google", "kakao"]) if (cur.coverage[k] != null && prevR.coverage[k] != null) ch.push({ kind: "coverage", label: (k === "google" ? "구글" : "카카오맵") + " 커버율", before: Math.round(prevR.coverage[k]! * 100) + "%", after: Math.round(cur.coverage[k]! * 100) + "%", delta: Math.round((cur.coverage[k]! - prevR.coverage[k]!) * 100), unit: "%p", good: cur.coverage[k]! >= prevR.coverage[k]! });
-      for (const r of d.history.rankTable.filter((x) => x.change != null && x.change !== 0).sort((a, b) => Math.abs(b.change!) * (b.volume ?? 1) - Math.abs(a.change!) * (a.volume ?? 1)).slice(0, 6)) { const n = r.ranks.length; const b = r.ranks[n - 2], a = r.ranks[n - 1]; ch.push({ kind: "rank", label: `「${r.keyword}」 플레이스 순위`, before: b == null ? "미노출" : b + "위", after: a == null ? "미노출" : a + "위", delta: r.change!, unit: "계단", good: r.change! > 0 }); }
+      if (cur.coverage.naver_place != null && prevR.coverage.naver_place != null && Math.round((cur.coverage.naver_place - prevR.coverage.naver_place) * 100) !== 0) ch.push({ kind: "coverage", label: "네이버 플레이스 커버율", before: Math.round(prevR.coverage.naver_place * 100) + "%", after: Math.round(cur.coverage.naver_place * 100) + "%", delta: Math.round((cur.coverage.naver_place - prevR.coverage.naver_place) * 100), unit: "%p", good: cur.coverage.naver_place >= prevR.coverage.naver_place });
+      if (cur.total != null && prevR.total != null && Math.round((cur.total - prevR.total) * 10) !== 0) { const dropped = Object.keys(prevR.platforms).filter((p) => prevR.platforms[p] != null && cur.platforms[p] == null); ch.push({ kind: "score", label: "온라인 가시성 점수", before: f(prevR.total, 1), after: f(cur.total, 1), delta: Math.round((cur.total - prevR.total) * 10) / 10, unit: "점", good: cur.total >= prevR.total, causes: dropped.length ? [`이번 측정에 ${dropped.map((p) => PLATFORM_LABEL[p] || p).join("·")} 결과가 없음(수집 오류) — 점수 비교 무효`] : [] }); }
+      for (const k of ["google", "kakao"]) if (cur.coverage[k] != null && prevR.coverage[k] != null && Math.round((cur.coverage[k]! - prevR.coverage[k]!) * 100) !== 0) ch.push({ kind: "coverage", label: (k === "google" ? "구글" : "카카오맵") + " 커버율", before: Math.round(prevR.coverage[k]! * 100) + "%", after: Math.round(cur.coverage[k]! * 100) + "%", delta: Math.round((cur.coverage[k]! - prevR.coverage[k]!) * 100), unit: "%p", good: cur.coverage[k]! >= prevR.coverage[k]! });
+      // 순위 변동 원인 진단 재료: 두 run 의 통합검색 블록·광고 수, 경쟁사 리뷰 증가
+      const serpTwo = (await db.prepare("SELECT o.run_id, k.text, o.detail FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id IN (?, ?) AND o.platform = 'naver_serp' AND o.entity_type = 'self'").bind(cur.runId, prevR.runId).all()).results as { run_id: number; text: string; detail: string }[];
+      const serpOf = (rid: number, kw: string) => { const r = serpTwo.find((x) => x.run_id === rid && x.text === kw); try { return JSON.parse(r?.detail || "{}") as { block?: { name: string; ad: boolean }[]; top5?: string[]; adCards?: number }; } catch { return {}; } };
+      const revGrowth: Record<string, number> = {}; for (const rv of d.history.reviews) { const pts = rv.points.filter((p) => p.y != null); const a = pts[pts.length - 1], b = pts.find((p) => p.x >= prevR.date) || pts[pts.length - 2]; if (a && b && a.x !== b.x) revGrowth[rv.entity] = a.y! - b.y!; }
+      const nm = (s: string) => s.replace(/\s+/g, "");
+      const diagnose = (kw: string, before: number | null, after: number | null): string[] => {
+        const out: string[] = []; const c = serpOf(cur.runId, kw), p = serpOf(prevR.runId, kw);
+        const cb = (c.block ? c.block.filter((x) => !x.ad).map((x) => x.name) : c.top5) || [], pb = (p.block ? p.block.filter((x) => !x.ad).map((x) => x.name) : p.top5) || [];
+        const aboveNow = after == null ? cb : cb.slice(0, after - 1); const newcomers = aboveNow.filter((n) => !pb.map(nm).includes(nm(n)));
+        if (newcomers.length) out.push(`위로 새로 들어온 병원: ${newcomers.slice(0, 2).join(", ")}`);
+        if (c.adCards != null && p.adCards != null && c.adCards > p.adCards) out.push(`광고 카드 ${p.adCards}→${c.adCards}개`);
+        const grew = aboveNow.map((n) => { const k = Object.keys(revGrowth).find((e) => nm(e) === nm(n) || nm(n).includes(nm(e))); return k && revGrowth[k] >= 10 ? `${k} 리뷰 +${revGrowth[k]}` : null; }).filter(Boolean) as string[];
+        if (grew.length) out.push(grew.slice(0, 2).join(" · "));
+        if (!out.length && before != null && after != null && Math.abs(before - after) === 1) out.push("한 계단 변동 — 측정 시각 편차 범위일 수 있음");
+        return out;
+      };
+      for (const r of d.history.rankTable.filter((x) => x.change != null && x.change !== 0).sort((a, b) => Math.abs(b.change!) * (b.volume ?? 1) - Math.abs(a.change!) * (a.volume ?? 1)).slice(0, 6)) { const n = r.ranks.length; const b = r.ranks[n - 2], a = r.ranks[n - 1]; ch.push({ kind: "rank", label: `「${r.keyword}」 플레이스 순위`, before: b == null ? "미노출" : b + "위", after: a == null ? "미노출" : a + "위", delta: r.change!, unit: "계단", good: r.change! > 0, causes: r.change! < 0 ? diagnose(r.keyword, b, a) : [] }); }
       for (const [name, v] of Object.entries(cur.competitors)) { const pv = prevR.competitors[name]; if (pv != null && v !== pv) ch.push({ kind: "competitor", label: `${name} 기회 점유`, before: pv.toLocaleString(), after: v.toLocaleString(), delta: v - pv, unit: "명", good: v < pv }); }
       for (const rv of d.history.reviews) { const pts = rv.points.filter((p) => p.y != null); if (pts.length >= 2) { const a = pts[pts.length - 1], b = pts.find((p) => p.x <= prevR.date) || pts[0]; if (a.y! !== b.y! && a.x !== b.x) ch.push({ kind: "review", label: `${rv.entity} 방문자 리뷰 수`, before: b.y!.toLocaleString(), after: a.y!.toLocaleString(), delta: a.y! - b.y!, unit: "건", good: rv.self ? a.y! >= b.y! : null }); } }
       for (const c of d.history.content) { const pts = c.followers.filter((p) => p.y != null); if (pts.length >= 2) { const a = pts[pts.length - 1], b = pts[pts.length - 2]; if (a.y !== b.y) ch.push({ kind: "content", label: `${c.label} 팔로워`, before: b.y!.toLocaleString(), after: a.y!.toLocaleString(), delta: a.y! - b.y!, unit: "명", good: a.y! >= b.y! }); } }
@@ -379,11 +431,85 @@ app.get("/app", async (c) => {
   return c.html(Dashboard({ h: hv(h), d }));
 });
 
+/* ── 처방 실행 추적 ── */
+app.post("/app/rx/:id/:act", async (c) => {
+  const h = c.get("hospital"); const id = Number(c.req.param("id")); const act = c.req.param("act");
+  const rx = await c.env.DB.prepare("SELECT id, keyword, status FROM prescriptions WHERE id = ? AND hospital_id = ?").bind(id, h.id).first<{ id: number; keyword: string; status: string }>();
+  if (!rx) return c.notFound();
+  const today = kstDate();
+  if (act === "done") {
+    // baseline = 마지막 측정의 그 키워드 순위·기회
+    const run = await c.env.DB.prepare("SELECT id, run_date FROM crawl_runs WHERE hospital_id = ? AND status IN ('completed','blocked') ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number; run_date: string }>();
+    const ob = run ? await c.env.DB.prepare("SELECT o.rank, o.detail FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? AND o.entity_type = 'self' AND o.platform = 'naver_place' AND k.text = ?").bind(run.id, rx.keyword).first<{ rank: number | null; detail: string }>() : null;
+    const opp = await c.env.DB.prepare("SELECT detail FROM weekly_opportunity WHERE hospital_id = ? AND platform = 'naver_place' ORDER BY week_start DESC LIMIT 1").bind(h.id).first<{ detail: string }>();
+    const lostRow = (() => { try { return (JSON.parse(opp?.detail || "{}").lost || []).find((l: { keyword: string }) => l.keyword === rx.keyword); } catch { return null; } })() as { captured?: number; blockSize?: number | null } | null;
+    const bs = (() => { try { return JSON.parse(ob?.detail || "{}").blockSize ?? null; } catch { return null; } })();
+    const checkAfter = new Date(Date.parse(today) + 21 * 86400_000).toISOString().slice(0, 10);
+    await c.env.DB.prepare("UPDATE prescriptions SET status = 'done', done_at = ?, baseline = ?, check_after = ?, result = NULL, result_at = NULL WHERE id = ?").bind(today, JSON.stringify({ date: run?.run_date ?? today, rank: ob?.rank ?? null, captured: lostRow?.captured ?? null, blockSize: lostRow?.blockSize ?? bs }), checkAfter, id).run();
+  } else if (act === "undo") await c.env.DB.prepare("UPDATE prescriptions SET status = 'open', done_at = NULL, baseline = NULL, check_after = NULL, result = NULL, result_at = NULL WHERE id = ?").bind(id).run();
+  else if (act === "dismiss") await c.env.DB.prepare("UPDATE prescriptions SET status = 'dismissed' WHERE id = ?").bind(id).run();
+  else if (act === "reopen") await c.env.DB.prepare("UPDATE prescriptions SET status = 'open' WHERE id = ?").bind(id).run();
+  return c.redirect("/app#rx");
+});
+/* ── 키워드 목표 ── */
+app.post("/app/settings/goals", async (c) => {
+  const h = c.get("hospital"); const b = await c.req.parseBody();
+  const kws = (await c.env.DB.prepare("SELECT id, target_rank FROM keywords WHERE hospital_id = ? AND is_active = 1").bind(h.id).all()).results as { id: number; target_rank: number | null }[];
+  const run = await c.env.DB.prepare("SELECT id FROM crawl_runs WHERE hospital_id = ? AND status IN ('completed','blocked') ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number }>();
+  const stmts: D1PreparedStatement[] = [];
+  for (const k of kws) {
+    const raw = str(b[`target_${k.id}`]); const t = raw ? Math.max(1, Math.min(10, Math.round(Number(raw)))) : null;
+    if (!raw || !Number.isFinite(t as number)) { if (k.target_rank != null) stmts.push(c.env.DB.prepare("UPDATE keywords SET target_rank = NULL, goal_set_at = NULL, goal_base_rank = NULL WHERE id = ?").bind(k.id)); continue; }
+    if (t === k.target_rank) continue;
+    const ob = run ? await c.env.DB.prepare("SELECT rank FROM observations WHERE run_id = ? AND keyword_id = ? AND entity_type = 'self' AND platform = 'naver_place'").bind(run.id, k.id).first<{ rank: number | null }>() : null;
+    stmts.push(c.env.DB.prepare("UPDATE keywords SET target_rank = ?, goal_set_at = ?, goal_base_rank = ? WHERE id = ?").bind(t, kstDate(), ob?.rank ?? null, k.id));
+  }
+  for (let i = 0; i < stmts.length; i += 40) await c.env.DB.batch(stmts.slice(i, i + 40));
+  return c.redirect("/app/settings?ok=1#goals");
+});
+/* ── 새 경쟁사 후보 채택·무시 ── */
+app.post("/app/competitors/:act", async (c) => {
+  const h = c.get("hospital"); const act = c.req.param("act"); const b = await c.req.parseBody();
+  const alertId = Number(b.alert); const al = await c.env.DB.prepare("SELECT id, detail FROM alerts WHERE id = ? AND hospital_id = ? AND code LIKE 'new_competitor:%'").bind(alertId, h.id).first<{ id: number; detail: string }>();
+  if (!al) return c.redirect("/app");
+  const x = (() => { try { return JSON.parse(al.detail || "{}"); } catch { return {}; } })() as { name?: string; placeId?: string | null };
+  if (act === "adopt" && x.name) {
+    const limit = limitsOf(h.plan).competitors;
+    const on = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM competitors WHERE hospital_id = ? AND is_active = 1").bind(h.id).first<{ n: number }>();
+    await c.env.DB.prepare("INSERT INTO competitors (hospital_id, name, name_aliases, naver_place_id, is_auto, is_active, created_at) VALUES (?,?,?,?,1,?,?) ON CONFLICT(hospital_id, name) DO UPDATE SET is_active = excluded.is_active, naver_place_id = COALESCE(competitors.naver_place_id, excluded.naver_place_id)").bind(h.id, x.name.slice(0, 60), "[]", x.placeId || null, (on?.n ?? 0) < limit ? 1 : 0, kstIso()).run();
+    await pushHubCompetitors(c.env, h);
+  } else if (act === "ignore") {
+    const st = await c.env.DB.prepare("SELECT ignored_competitors FROM hospital_settings WHERE hospital_id = ?").bind(h.id).first<{ ignored_competitors: string }>();
+    const list = (() => { try { return JSON.parse(st?.ignored_competitors || "[]") as string[]; } catch { return []; } })();
+    for (const v of [x.name, x.placeId]) if (v && !list.includes(v)) list.push(String(v));
+    await c.env.DB.prepare("INSERT INTO hospital_settings (hospital_id, ignored_competitors, updated_at) VALUES (?,?,?) ON CONFLICT(hospital_id) DO UPDATE SET ignored_competitors = excluded.ignored_competitors, updated_at = excluded.updated_at").bind(h.id, JSON.stringify(list.slice(0, 50)), kstIso()).run();
+  }
+  await c.env.DB.prepare("UPDATE alerts SET resolved_at = ? WHERE id = ?").bind(kstIso(), al.id).run();
+  return c.redirect(act === "adopt" ? "/app/settings#competitors" : "/app");
+});
+/* ── 증거: 그날 그 키워드의 블록 ── */
+app.get("/app/evidence/:runId/:keywordId", async (c) => {
+  const h = c.get("hospital"); const runId = Number(c.req.param("runId")), kid = Number(c.req.param("keywordId"));
+  const run = await c.env.DB.prepare("SELECT id, run_date, started_at, finished_at, kind FROM crawl_runs WHERE id = ? AND hospital_id = ?").bind(runId, h.id).first<{ id: number; run_date: string; started_at: string | null; finished_at: string | null; kind: string }>();
+  const kw = await c.env.DB.prepare("SELECT id, text FROM keywords WHERE id = ? AND hospital_id = ?").bind(kid, h.id).first<{ id: number; text: string }>();
+  if (!run || !kw) return c.notFound();
+  const obs = (await c.env.DB.prepare("SELECT platform, entity_type, entity_id, shown, rank, detail, observed_at FROM observations WHERE run_id = ? AND keyword_id = ? ORDER BY platform, entity_type").bind(runId, kid).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; detail: string; observed_at: string }[];
+  const names: Record<string, string> = { self: h.name };
+  for (const x of (await c.env.DB.prepare("SELECT id, name FROM competitors WHERE hospital_id = ?").bind(h.id).all()).results as { id: number; name: string }[]) names[`c${x.id}`] = x.name;
+  const pj = (s: string) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
+  const serp = pj(obs.find((o) => o.platform === "naver_serp" && o.entity_type === "self")?.detail || "") as { block?: { name: string; placeId: string | null; ad: boolean }[]; top5?: string[]; sections?: Record<string, boolean>; blockSize?: number; adCards?: number; mentions?: number; aib?: boolean };
+  const selfPlace = obs.find((o) => o.platform === "naver_place" && o.entity_type === "self");
+  const others = ["google_business", "google_serp", "kakao_map", "youtube"].map((p) => { const o = obs.find((x) => x.platform === p && x.entity_type === "self"); if (!o) return null; const d = pj(o.detail) as { top?: (string | { channel: string; title: string })[]; videoTitle?: string }; return { platform: p, label: p === "google_business" ? "구글 비즈니스(Places)" : p === "google_serp" ? "구글 검색" : p === "kakao_map" ? "카카오맵" : "유튜브 검색", rank: o.rank, shown: !!o.shown, top: (d.top || []).map((t) => (typeof t === "string" ? t : `${t.channel} · ${t.title}`)), note: d.videoTitle || null }; }).filter(Boolean) as { platform: string; label: string; rank: number | null; shown: boolean; top: string[]; note: string | null }[];
+  const entityRanks = obs.filter((o) => o.platform === "naver_place").map((o) => ({ name: o.entity_type === "self" ? h.name : names[`c${o.entity_id}`] || "경쟁사", self: o.entity_type === "self", rank: o.rank, shown: !!o.shown }));
+  const observedAt = (obs[0]?.observed_at || run.started_at || run.run_date).slice(0, 16).replace("T", " ");
+  return c.html(Evidence({ h: hv(h), keyword: kw.text, keywordId: kw.id, run: { id: run.id, date: run.run_date, kind: run.kind, observedAt }, block: serp.block || (serp.top5 || []).map((n) => ({ name: n, placeId: null, ad: false })), hasFullBlock: !!serp.block, sections: serp.sections || {}, blockSize: serp.blockSize ?? null, adCards: serp.adCards ?? null, mentions: serp.mentions ?? null, aib: !!serp.aib, selfRank: selfPlace?.rank ?? null, selfPlaceId: h.naver_place_id, entityRanks, others }));
+});
+
 /* ── 설정 ── */
 async function renderSettings(c: { env: AppEnv["Bindings"]; get: (k: "hospital") => HospitalRow }, flash?: string | null, flashErr?: string | null) {
   const h = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(c.get("hospital").id).first<HospitalRow>() as HospitalRow;
   const db = c.env.DB;
-  const keywords = (await db.prepare("SELECT id, text, is_active, source, monthly_pc, monthly_mobile, volume_low FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number }[];
+  const keywords = (await db.prepare("SELECT id, text, is_active, source, monthly_pc, monthly_mobile, volume_low, target_rank FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number; target_rank: number | null }[];
   const competitors = (await db.prepare("SELECT id, name, is_active, naver_place_id FROM competitors WHERE hospital_id = ? ORDER BY id").bind(h.id).all()).results as { id: number; name: string; is_active: number; naver_place_id: string | null }[];
   const settings = (await db.prepare("SELECT report_email_enabled, report_recipients FROM hospital_settings WHERE hospital_id = ?").bind(h.id).first<{ report_email_enabled: number; report_recipients: string }>()) || { report_email_enabled: 1, report_recipients: "[]" };
   const users = (await db.prepare("SELECT email, name, role FROM hospital_users WHERE hospital_id = ?").bind(h.id).all()).results as { email: string; name: string | null; role: string }[];

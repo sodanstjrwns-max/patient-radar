@@ -4,7 +4,7 @@ import type { Bindings } from "../lib/config";
 import { platformAvailability } from "../lib/config";
 import { equalSecret, adminAuthorized, issueAdminSession } from "../lib/security";
 import type { HospitalRow } from "../lib/session";
-import { runHospital, syncReviews, loadEntities, computeOpportunities } from "../lib/measure";
+import { runHospital, syncReviews, loadEntities, computeOpportunities, syncPrescriptions, refreshPlaceSnapshots } from "../lib/measure";
 import { limitsOf } from "../lib/plan-limits";
 import { buildWeeklyReport, reportToText, sendMail, sendOpsAlert } from "../lib/report";
 import { kstDate, kstIso, weekStart } from "../lib/time";
@@ -144,7 +144,7 @@ api.get("/api/v1/funnel-stats", async (c) => {
   if (op) {
     let d: Record<string, unknown> = {}; try { d = JSON.parse(String(op.detail || "{}")); } catch {}
     const lost = (Array.isArray(d.lost) ? d.lost as Record<string, unknown>[] : []).slice().sort((a, b) => Number(b.lost || 0) - Number(a.lost || 0)).slice(0, 3)
-      .map((x) => ({ keyword: x.keyword, volume: x.volume, rank: x.rank ?? null, lost: x.lost, action: Array.isArray(x.actions) && x.actions.length ? String(x.actions[0]).slice(0, 160) : null }));
+      .map((x) => ({ keyword: x.keyword, volume: x.volume, rank: x.rank ?? null, lost: x.lost, action: Array.isArray(x.actions) && x.actions.length ? String((x.actions[0] as { text?: string }).text ?? x.actions[0]).slice(0, 160) : null }));
     const comps = d.competitors && typeof d.competitors === "object" ? Object.values(d.competitors as Record<string, { name?: string; coverage?: number }>) : [];
     const best = comps.reduce<{ name?: string; coverage?: number } | null>((m, x) => (!m || Number(x.coverage || 0) > Number(m.coverage || 0) ? x : m), null);
     opportunity = { week_start: op.week_start, platform: op.platform, pool: op.pool, captured: op.captured, coverage: op.coverage, top_lost: lost, best_competitor: best ? { name: best.name, coverage: best.coverage } : null };
@@ -200,7 +200,11 @@ api.post("/admin/recompute/:id", async (c) => {
   const run = await c.env.DB.prepare("SELECT id, run_date FROM crawl_runs WHERE hospital_id = ? AND status = 'completed' ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number; run_date: string }>();
   if (!run) return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} 완료된 측정이 없습니다`));
   const week = weekStart(new Date(run.run_date + "T12:00:00+09:00"));
-  try { await computeOpportunities(c.env.DB, h.id, run.id, week); } catch (e) { return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} 재계산 실패: ${String(e).slice(0, 80)}`)); }
+  try {
+    if (c.req.query("snapshots") !== "0") await refreshPlaceSnapshots(c.env, h, run.run_date);
+    await computeOpportunities(c.env.DB, h.id, run.id, week);
+    await syncPrescriptions(c.env.DB, h.id, run.id, week, run.run_date);
+  } catch (e) { return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} 재계산 실패: ${String(e).slice(0, 80)}`)); }
   return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} run ${run.id}(${run.run_date}) 기회·처방 재계산 완료`));
 });
 api.post("/admin/plan/:id", async (c) => {
