@@ -3,7 +3,7 @@ import { NAVER_MOBILE_UA } from "./naver-serp";
 import { NaverBlockedError } from "./naver-html";
 import { isBlockedHtml } from "./naver-serp";
 
-export type NaverReview = { key: string; body: string; reply: string | null; visitCount: number | null; writtenAt: string | null; keywords: string[] };
+export type NaverReview = { key: string; body: string; reply: string | null; visitCount: number | null; writtenAt: string | null; keywords: string[]; photoCount: number };
 
 /** "9.23.수" / "2025.12.3.수" → YYYY-MM-DD (연도 없으면 최근 날짜로 추정) */
 export function parseNaverDate(s: string | null | undefined, now = new Date()): string | null {
@@ -27,7 +27,8 @@ export function parseVisitorReviews(html: string): NaverReview[] {
     const r = v as Record<string, unknown>;
     const reply = r.reply && typeof r.reply === "object" ? ((r.reply as { body?: string }).body ?? null) : null;
     const kws = Array.isArray(r.votedKeywords) ? (r.votedKeywords as { name?: string }[]).map((k) => k?.name || "").filter(Boolean) : [];
-    out.push({ key: String(r.id || r.reviewId || ""), body: String(r.body).trim(), reply, visitCount: typeof r.visitCount === "number" ? r.visitCount : Number(r.visitCount) || null, writtenAt: parseNaverDate(String(r.created || r.visited || "")), keywords: kws });
+    const photoCount = Array.isArray(r.media) ? (r.media as unknown[]).length : 0;
+    out.push({ key: String(r.id || r.reviewId || ""), body: String(r.body).trim(), reply, photoCount, visitCount: typeof r.visitCount === "number" ? r.visitCount : Number(r.visitCount) || null, writtenAt: parseNaverDate(String(r.created || r.visited || "")), keywords: kws });
   }
   return out.filter((r) => r.key && r.body);
 }

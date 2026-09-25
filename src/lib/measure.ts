@@ -422,16 +422,19 @@ export async function syncReviews(env: Bindings, h: HospitalRow, entities: Entit
     for (const r of list) {
       const a = analyzeReview(r.body, h.clinic_type);
       const neg = isNegative(null, a.complaints);
-      const res = await db.prepare("INSERT OR IGNORE INTO reviews (hospital_id, entity_type, entity_id, platform, review_key, rating, body, reply, visit_count, written_at, treatments, complaints, negative, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", r.key, null, r.body.slice(0, 2000), r.reply ? r.reply.slice(0, 1000) : null, r.visitCount, r.writtenAt, JSON.stringify(a.treatments), JSON.stringify(a.complaints), neg ? 1 : 0, kstIso()).run();
+      const res = await db.prepare("INSERT OR IGNORE INTO reviews (hospital_id, entity_type, entity_id, platform, review_key, rating, body, reply, visit_count, written_at, treatments, complaints, negative, photo_count, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", r.key, null, r.body.slice(0, 2000), r.reply ? r.reply.slice(0, 1000) : null, r.visitCount, r.writtenAt, JSON.stringify(a.treatments), JSON.stringify(a.complaints), neg ? 1 : 0, r.photoCount, kstIso()).run();
       if (res.meta.changes) { inserted++; if (neg) { negative++; if (e.key === "self") newNegatives.push({ entity: e.name, body: r.body.slice(0, 120), complaints: a.complaints }); } }
     }
     // 30일 통계
-    const rows = (await db.prepare("SELECT negative, reply, treatments, complaints FROM reviews WHERE hospital_id = ? AND platform = 'naver_place' AND entity_type = ? AND COALESCE(entity_id, 0) = ? AND written_at >= ?").bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId ?? 0, since30).all()).results as { negative: number; reply: string | null; treatments: string; complaints: string }[];
+    const rows = (await db.prepare("SELECT negative, reply, treatments, complaints, body, photo_count FROM reviews WHERE hospital_id = ? AND platform = 'naver_place' AND entity_type = ? AND COALESCE(entity_id, 0) = ? AND written_at >= ?").bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId ?? 0, since30).all()).results as { negative: number; reply: string | null; treatments: string; complaints: string; body: string; photo_count: number }[];
+    const lens = rows.map((r) => r.body.replace(/\s+/g, "").length);
+    const avgLen = lens.length ? Math.round(lens.reduce((a, b) => a + b, 0) / lens.length) : null;
+    const longCount = lens.filter((l) => l >= 100).length, photoCount = rows.filter((r) => r.photo_count > 0).length;
     const tc: Record<string, number> = {}, cc: Record<string, number> = {};
     for (const r of rows) { for (const t of JSON.parse(r.treatments || "[]")) tc[t] = (tc[t] || 0) + 1; for (const c of JSON.parse(r.complaints || "[]")) cc[c] = (cc[c] || 0) + 1; }
-    await db.prepare("INSERT OR REPLACE INTO review_stats (hospital_id, entity_type, entity_id, platform, stat_date, count_30d, negative_30d, replied_30d, treatments, complaints, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-      .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", today, rows.length, rows.filter((r) => r.negative).length, rows.filter((r) => r.reply).length, JSON.stringify(tc), JSON.stringify(cc), kstIso()).run();
+    await db.prepare("INSERT OR REPLACE INTO review_stats (hospital_id, entity_type, entity_id, platform, stat_date, count_30d, negative_30d, replied_30d, treatments, complaints, avg_len, long_count, photo_count, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", today, rows.length, rows.filter((r) => r.negative).length, rows.filter((r) => r.reply).length, JSON.stringify(tc), JSON.stringify(cc), avgLen, longCount, photoCount, kstIso()).run();
     await new Promise((r) => setTimeout(r, 2500));
   }
   if (newNegatives.length) {
