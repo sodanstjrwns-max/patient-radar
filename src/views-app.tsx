@@ -159,6 +159,7 @@ export type DashboardData = {
   platforms: { key: string; label: string; score: number | null; prev: number | null; sov: number | null; state: "ok" | "unmeasured" | "needs_key" | "plan" }[];
   matrix: { keyword: string; volume: number | null; volumeLow?: boolean; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
   hasVolume: boolean;
+  arrivals: { week_start: string; first_visits: number; answered: number; search: number; naver: number; google: number; ai: number; sns: number; content: number; referral: number; sign: number; nearby: number; other: number; coverage: number | null }[];
   opportunity: { pool: number; platforms: { key: string; label: string; captured: number; coverage: number | null; prev: number | null }[]; lost: LostItem[]; competitors: { name: string; captured: number; coverage: number | null }[]; selfCaptured: number } | null;
   matrixPlatforms: { key: string; label: string }[];
   competitors: { id: number; name: string; score: number | null }[];
@@ -278,6 +279,16 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
                 <thead><tr><th>병원</th><th>플랫폼</th>{d.reputation[0].points.map((p) => <th>{p.date.slice(5)}</th>)}</tr></thead>
                 <tbody>{d.reputation.map((r) => <tr><td>{r.entity}</td><td>{r.platform}</td>{r.points.map((p) => <td>{p.reviews == null ? "—" : p.reviews.toLocaleString()}{p.blog != null ? <small class="muted"> +블로그 {p.blog.toLocaleString()}</small> : null}{p.rating != null ? <small class="muted"> ★{p.rating}</small> : null}</td>)}</tr>)}</tbody>
               </table></div>
+            </section>
+          ) : null}
+          {d.arrivals.length ? (
+            <section class="card">
+              <div class="card-head"><h2>실제 신환 경로 <small class="muted">페이션트 폼 접수 문진 · 주 단위 건수</small></h2></div>
+              <div class="table-scroll"><table class="matrix">
+                <thead><tr><th>주</th><th>신환</th><th>검색</th><th class="muted">네이버 / 구글</th><th>AI</th><th>SNS</th><th>콘텐츠</th><th>소개</th><th>간판·근처</th><th>기타</th><th>플레이스 기회 커버</th></tr></thead>
+                <tbody>{d.arrivals.map((a) => <tr><td class="kw">{a.week_start.slice(5)}</td><td><b>{a.first_visits}</b>{a.answered < a.first_visits ? <small class="muted"> (응답 {a.answered})</small> : null}</td><td><b>{a.search}</b></td><td class="muted">{a.naver} / {a.google}</td><td>{a.ai}</td><td>{a.sns}</td><td>{a.content}</td><td>{a.referral}</td><td>{a.sign + a.nearby}</td><td>{a.other}</td><td>{a.coverage == null ? <span class="muted">—</span> : pct(a.coverage)}</td></tr>)}</tbody>
+              </table></div>
+              <p class="muted small">1단계 인지 지표: 신환 중 「검색해서·AI에게 물어봐서·SNS·콘텐츠」 비중. 같은 주의 플레이스 기회 커버율을 옆에 두어, 노출이 오르내릴 때 검색 신환이 따라오는지 봅니다. 4주 이상 쌓여야 읽힙니다.</p>
             </section>
           ) : null}
           <section class="grid-2">
@@ -405,7 +416,7 @@ export function AdminPage({ hospitals, runs, alerts, config, flash }: { hospital
         <tbody>{hospitals.map((x) => <tr><td>{String(x.id)}</td><td>{String(x.name)}</td><td class="muted small">{String(x.ps_hospital_id ?? "")}</td>
           <td><form method="post" action={"/admin/plan/" + x.id} class="inline"><select name="plan">{["FREE", "S", "M", "L"].map((p) => <option value={p} selected={p === x.plan}>{p}</option>)}</select><button class="button button-small button-outline">저장</button></form></td>
           <td>{x.onboarded_at ? "✓" : "—"}</td><td>{String(x.keywords)}</td><td class="small">{String(x.last_run ?? "—")} {String(x.last_status ?? "")}</td><td>{x.week_score == null ? "—" : String(x.week_score)}</td>
-          <td><form method="post" action={"/admin/run/" + x.id} class="inline"><button class="button button-small button-primary">지금 측정</button></form></td></tr>)}</tbody></table></div></section>
+          <td><form method="post" action={"/admin/run/" + x.id} class="inline"><button class="button button-small button-primary">지금 측정</button></form> <form method="post" action={"/admin/form-key/" + x.id} class="inline"><input type="password" name="key" placeholder={x.has_form_key ? "폼 키 설정됨 · 교체" : "폼 연동 키 pfk_…"} style="width:150px" /><button class="button button-small button-outline">저장</button></form></td></tr>)}</tbody></table></div></section>
       <section class="grid-2">
         <div class="card"><h2>최근 실행</h2><ul class="runs">{runs.map((r) => <li><span>{String(r.run_date)} #{String(r.hospital_id)}</span><span class={"status " + r.status}>{String(r.status)}</span><span class="muted small">{String(r.kind)} {r.error ? String(r.error).slice(0, 80) : ""}</span></li>)}</ul></div>
         <div class="card"><h2>경보</h2><ul class="alerts">{alerts.map((a) => <li class={String(a.severity)}><span class="sev">{String(a.severity)}</span>#{String(a.hospital_id ?? "-")} {String(a.message)}<small class="muted">{String(a.created_at).slice(0, 16)}</small></li>)}</ul>

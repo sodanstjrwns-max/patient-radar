@@ -108,7 +108,8 @@ api.get("/admin", async (c) => {
       (SELECT COUNT(*) FROM keywords k WHERE k.hospital_id = h.id AND k.is_active = 1) AS keywords,
       (SELECT run_date FROM crawl_runs r WHERE r.hospital_id = h.id ORDER BY run_date DESC, id DESC LIMIT 1) AS last_run,
       (SELECT status FROM crawl_runs r WHERE r.hospital_id = h.id ORDER BY run_date DESC, id DESC LIMIT 1) AS last_status,
-      (SELECT score FROM weekly_scores w WHERE w.hospital_id = h.id AND w.platform = 'total' AND w.week_start = ?) AS week_score
+      (SELECT score FROM weekly_scores w WHERE w.hospital_id = h.id AND w.platform = 'total' AND w.week_start = ?) AS week_score,
+      (SELECT form_api_key IS NOT NULL FROM hospital_settings s WHERE s.hospital_id = h.id) AS has_form_key
     FROM hospitals h ORDER BY h.id`).bind(week).all()).results as Record<string, unknown>[];
   const runs = (await db.prepare("SELECT hospital_id, run_date, status, kind, error FROM crawl_runs ORDER BY id DESC LIMIT 15").all()).results as Record<string, unknown>[];
   const alerts = (await db.prepare("SELECT hospital_id, severity, message, created_at FROM alerts ORDER BY id DESC LIMIT 15").all()).results as Record<string, unknown>[];
@@ -136,6 +137,14 @@ api.post("/admin/plan/:id", async (c) => {
   if (!["FREE", "S", "M", "L"].includes(plan)) return c.text("bad plan", 400);
   await c.env.DB.prepare("UPDATE hospitals SET plan = ?, updated_at = ? WHERE id = ?").bind(plan, kstIso(), Number(c.req.param("id"))).run();
   return c.redirect("/admin?msg=" + encodeURIComponent("플랜 저장"));
+});
+api.post("/admin/form-key/:id", async (c) => {
+  if (!(await adminAuthorized(c))) return c.text("forbidden", 403);
+  const b = await c.req.parseBody(); const key = String(b.key || "").trim();
+  if (!/^pfk_[A-Za-z0-9]{32,}$/.test(key)) return c.redirect("/admin?msg=" + encodeURIComponent("폼 키 형식 오류(pfk_…)"));
+  const id = Number(c.req.param("id"));
+  await c.env.DB.prepare("INSERT INTO hospital_settings (hospital_id, form_api_key, updated_at) VALUES (?,?,?) ON CONFLICT(hospital_id) DO UPDATE SET form_api_key = excluded.form_api_key, updated_at = excluded.updated_at").bind(id, key, kstIso()).run();
+  return c.redirect("/admin?msg=" + encodeURIComponent(`#${id} 폼 키 저장`));
 });
 api.post("/admin/clear-pause", async (c) => {
   if (!(await adminAuthorized(c))) return c.text("forbidden", 403);

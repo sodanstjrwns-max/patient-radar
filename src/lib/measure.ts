@@ -15,6 +15,7 @@ import { fetchSignalScore } from "../collectors/signal";
 import { fetchVolumes } from "../collectors/naver-searchad";
 import { computeOpportunity, type KeywordRow } from "./opportunity";
 import { prescribe } from "./playbook";
+import { fetchArrivalStats } from "../collectors/form";
 import { localityCandidates } from "./keywords";
 import type { HospitalRow } from "./session";
 
@@ -227,6 +228,8 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
       try { signalScore = (await fetchSignalScore(h.ps_hospital_id!, { SIGNAL_API_URL: env.SIGNAL_API_URL!, SIGNAL_API_KEY: env.SIGNAL_API_KEY! }, fetchImpl)).score; }
       catch (e) { errors.push(`signal ${String(e).slice(0, 60)}`); }
     }
+    // ── 페이션트 폼 내원경로 반입(병원별 키가 있을 때, 최근 8주)
+    try { await syncArrivals(env, h.id, fetchImpl); } catch (e) { errors.push(`form ${String(e).slice(0, 60)}`); }
     const { platforms, total } = await computeWeeklyScores(db, h.id, runId, week, signalScore);
     try { await computeOpportunities(db, h.id, runId, week); } catch (e) { errors.push(`opportunity ${String(e).slice(0, 60)}`); }
     const status = blocked ? "blocked" : "completed";
@@ -350,4 +353,17 @@ export async function computeOpportunities(db: D1Database, hospitalId: number, r
       .bind(hospitalId, week, p, op.pool, op.captured, op.coverage ?? 0, JSON.stringify({ lost, competitors: op.competitors }), kstIso()));
   }
   if (stmts.length) await db.batch(stmts);
+}
+
+/** 페이션트 폼에서 신환 내원경로 주간 집계를 가져와 weekly_arrivals 에 저장 */
+export async function syncArrivals(env: Bindings, hospitalId: number, fetchImpl: typeof fetch = fetch) {
+  const st = await env.DB.prepare("SELECT form_api_key FROM hospital_settings WHERE hospital_id = ?").bind(hospitalId).first<{ form_api_key: string | null }>();
+  if (!st?.form_api_key) return { skipped: "no_key" };
+  const to = kstDate();
+  const from = new Date(Date.now() - 63 * 86400_000).toISOString().slice(0, 10);
+  const weeks = await fetchArrivalStats(env.FORM_API_URL || "https://form.patientfunnel.kr", st.form_api_key, from, to, fetchImpl);
+  if (!weeks.length) return { weeks: 0 };
+  await env.DB.batch(weeks.map((w) => env.DB.prepare("INSERT OR REPLACE INTO weekly_arrivals (hospital_id, week_start, first_visits, answered, declined, unanswered, groups, primary_paths, fetched_at) VALUES (?,?,?,?,?,?,?,?,?)")
+    .bind(hospitalId, w.week_start, w.first_visits, w.answered, w.declined, w.unanswered, JSON.stringify(w.groups || {}), JSON.stringify(w.primary || {}), kstIso())));
+  return { weeks: weeks.length };
 }

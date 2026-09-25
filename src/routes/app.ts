@@ -187,7 +187,7 @@ app.get("/app", async (c) => {
   const weeks = (await db.prepare("SELECT DISTINCT week_start FROM weekly_scores WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 2").bind(h.id).all()).results as { week_start: string }[];
   const week = weeks[0]?.week_start ?? null;
   const prevWeek = weeks[1]?.week_start ?? null;
-  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, opportunity: null };
+  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, arrivals: [], opportunity: null };
   if (week) {
     const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
     const prev = prevWeek ? ((await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; score: number }[]) : [];
@@ -243,6 +243,12 @@ app.get("/app", async (c) => {
         competitors: Object.values(det.competitors || {}).sort((a, b) => b.captured - a.captured),
         selfCaptured: np.captured,
       };
+    }
+    // 실제 신환 경로(폼) × 같은 주 플레이스 기회 커버율
+    const arr = (await db.prepare("SELECT week_start, first_visits, answered, groups, primary_paths FROM weekly_arrivals WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 10").bind(h.id).all()).results as { week_start: string; first_visits: number; answered: number; groups: string; primary_paths: string }[];
+    if (arr.length) {
+      const cov = (await db.prepare("SELECT week_start, coverage FROM weekly_opportunity WHERE hospital_id = ? AND platform = 'naver_place'").bind(h.id).all()).results as { week_start: string; coverage: number }[];
+      d.arrivals = arr.map((a) => { const g = JSON.parse(a.groups || "{}"), p = JSON.parse(a.primary_paths || "{}"); return { week_start: a.week_start, first_visits: a.first_visits, answered: a.answered, search: g.search || 0, naver: p["search.naver"] || 0, google: p["search.google"] || 0, ai: g.ai || 0, sns: g.sns || 0, content: g.content || 0, referral: g.referral || 0, sign: g.sign || 0, nearby: g.nearby || 0, other: (g.other || 0) + (g.agreement || 0), coverage: cov.find((c) => c.week_start === a.week_start)?.coverage ?? null }; });
     }
     d.alerts = (await db.prepare("SELECT severity, message, created_at FROM alerts WHERE hospital_id = ? ORDER BY id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["alerts"];
     d.runs = (await db.prepare("SELECT run_date, status, kind, error FROM crawl_runs WHERE hospital_id = ? ORDER BY run_date DESC, id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["runs"];

@@ -31,6 +31,7 @@ export type Bindings = {
   SIGNAL_API_URL?: string;
   SIGNAL_API_KEY?: string;
   // 메일
+  FORM_API_URL?: string; // 기본 https://form.patientfunnel.kr
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
   OPS_EMAIL?: string;
