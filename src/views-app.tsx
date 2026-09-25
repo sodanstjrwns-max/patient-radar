@@ -5,6 +5,7 @@ import { APP_NAME, CONTACT, VERSION } from "./lib/config";
 import { PLATFORM_LABEL, type ReportContent } from "./lib/report";
 import { CLINIC_TYPES } from "./data/procedures";
 import { PLAN_LIMITS, type Plan } from "./lib/plan-limits";
+import { LineChart, StackedBars } from "./lib/charts";
 
 export const fmt = (n: number | null | undefined, d = 0) => (n == null ? "—" : Number(n).toFixed(d));
 export const pct = (n: number | null | undefined) => (n == null ? "—" : Math.round(n * 100) + "%");
@@ -159,6 +160,15 @@ export type DashboardData = {
   platforms: { key: string; label: string; score: number | null; prev: number | null; sov: number | null; state: "ok" | "unmeasured" | "needs_key" | "plan" }[];
   matrix: { keyword: string; volume: number | null; volumeLow?: boolean; cells: Record<string, { rank: number | null; shown: boolean; ad?: boolean }>; competitors: Record<string, { rank: number | null; shown: boolean }> }[];
   hasVolume: boolean;
+  history: {
+    runs: { date: string; runId: number; total: number | null; weighted: number | null; platforms: Record<string, number | null>; coverage: Record<string, number | null>; selfCaptured: number | null; competitors: Record<string, number> }[];
+    rankTable: { keyword: string; volume: number | null; ranks: (number | null)[]; shown: boolean[]; change: number | null }[];
+    dates: string[];
+    reviews: { entity: string; self: boolean; points: { x: string; y: number | null }[] }[];
+    content: { label: string; followers: { x: string; y: number | null }[]; views: { x: string; y: number | null }[] }[];
+    changes: { kind: string; label: string; before: string; after: string; delta: number; unit: string; good: boolean | null }[];
+    prevDate: string | null;
+  };
   insights: { tone: string; icon: string; title: string; evidence: string; action?: string }[];
   reviews: { rows: { entity: string; self: boolean; velocity30: number | null; analyzed: number; negative: number; replied: number; treatments: [string, number][]; complaints: [string, number][] }[]; recentNegative: { entity: string; body: string; complaints: string[]; written_at: string | null }[]; latest: { body: string; written_at: string | null; treatments: string[] }[] } | null;
   content: { platform: string; label: string; followers: number | null; prevFollowers: number | null; views: number | null; prevViews: number | null; date: string; manual: boolean; top: { title: string; views: number }[] }[];
@@ -175,8 +185,8 @@ export type DashboardData = {
 };
 
 function Spark({ series }: { series: { week: string; score: number }[] }) {
-  if (series.length < 2) return <span class="muted small">추세는 2주차부터</span>;
-  const w = 160, hgt = 40, min = 0, max = 100;
+  if (series.length < 2) return <span class="muted small">추세는 2회 측정부터</span>;
+  const w = 220, hgt = 44, min = 0, max = 100;
   const pts = series.map((p, i) => `${(i / (series.length - 1)) * w},${hgt - ((p.score - min) / (max - min)) * hgt}`).join(" ");
   return <svg class="spark" viewBox={`0 0 ${w} ${hgt}`} width={w} height={hgt} aria-label="8주 추세"><polyline points={pts} fill="none" stroke="currentColor" stroke-width="2" /></svg>;
 }
@@ -206,17 +216,29 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
               <p class="tile-label">검색 기회 커버율 <small>네이버 플레이스 · {d.week} 주</small></p>
               <div class="tile-num">{np ? pct(np.coverage) : "—"}{np ? <span class="tile-delta">{np.prev != null && np.coverage != null ? <span class={"delta " + (np.coverage - np.prev > 0.005 ? "up" : np.coverage - np.prev < -0.005 ? "down" : "flat")}>{np.coverage - np.prev >= 0 ? "▲" : "▼"}{Math.abs(Math.round((np.coverage - np.prev) * 100))}%p</span> : <span class="muted small">첫 주</span>}</span> : null}</div>
               <p class="tile-sub">{d.opportunity ? <>월 <b>{d.opportunity.pool.toLocaleString()}</b>명이 검색 · 우리에게 보인 기회 <b>{np?.captured.toLocaleString()}</b>명</> : "검색량 연결 전"}</p>
+              <div class="tile-spark"><Spark series={d.history.runs.map((r) => ({ week: r.date, score: (r.coverage.naver_place ?? 0) * 100 }))} /></div>
             </div>
             <div class="tile">
               <p class="tile-label">온라인 가시성 점수</p>
               <div class="tile-num">{fmt(d.total.score, 1)}<span class="tile-cap">/100</span>{delta(d.total.score, d.total.prev)}</div>
               <p class="tile-sub">{d.total.weighted != null ? <>수요 가중 <b>{fmt(d.total.weighted, 1)}</b> · 점유율 {pct(d.total.sov)}</> : <>점유율 {pct(d.total.sov)}</>}</p>
+              <div class="tile-spark"><Spark series={d.history.runs.filter((r) => r.total != null).map((r) => ({ week: r.date, score: r.total as number }))} /></div>
             </div>
             <div class="tile">
               <p class="tile-label">지난주 신환 <small>페이션트 폼</small></p>
               <div class="tile-num">{lastWeek ? lastWeek.first_visits : "—"}<span class="tile-cap">명</span></div>
               <p class="tile-sub">{lastWeek ? <>검색 <b>{lastWeek.search}</b> · 소개 {lastWeek.referral} · AI {lastWeek.ai} · SNS/콘텐츠 {lastWeek.sns + lastWeek.content}</> : "폼 연결 전"}</p>
             </div>
+          </section>
+
+          {/* ── 무엇이 변했나 ── */}
+          <section class="card changes">
+            <div class="card-head"><h2 class="h2">무엇이 변했나 <small class="muted">{d.history.prevDate ? `${d.history.prevDate} → ${d.history.dates[d.history.dates.length - 1]}` : "첫 측정 · 다음 측정부터 비교가 시작됩니다"}</small></h2></div>
+            {d.history.changes.length ? (
+              <div class="change-grid">{d.history.changes.map((c) => (
+                <div class={"change " + (c.good == null ? "neutral" : c.good ? "good" : "bad")}><p class="change-label">{c.label}</p><p class="change-val"><span class="before">{c.before}</span><span class="arrow">→</span><span class="after">{c.after}</span></p><p class={"change-delta " + (c.delta > 0 ? "plus" : "minus")}>{c.delta > 0 ? "▲" : "▼"} {Math.abs(c.delta).toLocaleString()}{c.unit}</p></div>
+              ))}</div>
+            ) : d.history.prevDate ? <p class="muted small">지난 측정과 달라진 것이 없습니다.</p> : <p class="muted small">화요일 새벽 정기 측정부터 순위·커버율·리뷰·팔로워 변화가 여기에 쌓입니다.</p>}
           </section>
 
           {/* ── 인사이트 ── */}
@@ -228,6 +250,28 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
               ))}</ol>
             </section>
           ) : null}
+
+          <Sec title="추이" sub="측정마다 쌓이는 그래프 · 커버율 · 점수 · 순위 · 리뷰 · 팔로워 · 신환" open id="trend">
+            <div class="grid-2">
+              <div><h3 class="h3">검색 기회 커버율</h3><LineChart percent yMax={1} series={[{ label: "네이버 플레이스", color: "#6B4226", points: d.history.runs.map((r) => ({ x: r.date, y: r.coverage.naver_place ?? null })) }, { label: "구글", color: "#3b5a7a", points: d.history.runs.map((r) => ({ x: r.date, y: r.coverage.google ?? null })) }, { label: "카카오맵", color: "#c9a227", points: d.history.runs.map((r) => ({ x: r.date, y: r.coverage.kakao ?? null })) }]} /></div>
+              <div><h3 class="h3">온라인 가시성 점수</h3><LineChart yMax={100} series={[{ label: "점수", color: "#6B4226", points: d.history.runs.map((r) => ({ x: r.date, y: r.total })) }, { label: "수요 가중", color: "#a86a10", points: d.history.runs.map((r) => ({ x: r.date, y: r.weighted })) }, { label: "네이버 플레이스", color: "#2f7d4f", points: d.history.runs.map((r) => ({ x: r.date, y: r.platforms.naver_place ?? null })) }]} /></div>
+            </div>
+            <div class="grid-2">
+              <div><h3 class="h3">누가 수요를 가져가나 <small class="muted">플레이스 기회(명)</small></h3><LineChart series={[{ label: h.name, color: "#6B4226", points: d.history.runs.map((r) => ({ x: r.date, y: r.selfCaptured })) }, ...Object.keys(d.history.runs[d.history.runs.length - 1]?.competitors || {}).map((name, i) => ({ label: name, color: ["#8a8f98", "#b3352b", "#3b5a7a", "#c9a227"][i % 4], points: d.history.runs.map((r) => ({ x: r.date, y: r.competitors[name] ?? null })) }))]} /></div>
+              <div><h3 class="h3">방문자 리뷰 수 <small class="muted">네이버 플레이스</small></h3><LineChart yMin={0} series={d.history.reviews.map((rv, i) => ({ label: rv.entity, color: rv.self ? "#6B4226" : ["#8a8f98", "#b3352b", "#3b5a7a", "#c9a227"][i % 4], points: rv.points }))} /></div>
+            </div>
+            <div>
+              <h3 class="h3">키워드 순위 변화 <small class="muted">네이버 플레이스 · 열 = 측정일 · 마지막 열 = 직전 대비</small></h3>
+              <div class="table-scroll"><table class="matrix heat">
+                <thead><tr><th>키워드</th><th>월 검색</th>{d.history.dates.map((dt) => <th>{dt.slice(5)}</th>)}<th>변화</th></tr></thead>
+                <tbody>{d.history.rankTable.map((r) => <tr><td class="kw">{r.keyword}</td><td class="vol">{r.volume == null ? "—" : r.volume.toLocaleString()}</td>{r.ranks.map((rk, i) => <td><span class={"heat-cell " + (rk == null ? (r.shown[i] ? "h-else" : "h-none") : rk === 1 ? "h1" : rk <= 3 ? "h3" : rk <= 5 ? "h5" : "h10")}>{rk == null ? (r.shown[i] ? "노출" : "—") : rk}</span></td>)}<td>{r.change == null ? <span class="muted">—</span> : r.change === 0 ? <span class="muted">=</span> : <span class={"delta " + (r.change > 0 ? "up" : "down")}>{r.change > 0 ? "▲" : "▼"}{Math.abs(r.change) >= 90 ? "" : Math.abs(r.change)}</span>}</td></tr>)}</tbody>
+              </table></div>
+            </div>
+            <div class="grid-2">
+              {d.history.content.length ? <div><h3 class="h3">콘텐츠 30일 조회·도달</h3><LineChart series={d.history.content.map((c, i) => ({ label: c.label.replace("유튜브 · ", "YT "), color: ["#6B4226", "#b3352b", "#3b5a7a", "#c9a227", "#2f7d4f", "#8a8f98"][i % 6], points: c.views }))} /></div> : null}
+              {d.arrivals.length ? <div><h3 class="h3">주간 신환 경로 <small class="muted">페이션트 폼</small></h3><StackedBars keys={["검색", "AI", "SNS·콘텐츠", "소개", "기타"]} colors={{ "검색": "#6B4226", "AI": "#a86a10", "SNS·콘텐츠": "#c9a227", "소개": "#2f7d4f", "기타": "#b8b0a6" }} groups={[...d.arrivals].reverse().map((a) => ({ x: a.week_start, values: { "검색": a.search, "AI": a.ai, "SNS·콘텐츠": a.sns + a.content, "소개": a.referral, "기타": a.sign + a.nearby + a.other } }))} /></div> : null}
+            </div>
+          </Sec>
 
           {d.opportunity ? (
             <Sec title="검색 기회" sub="놓친 기회 순위 · 누가 가져가나 · 처방" open id="opp">

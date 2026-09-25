@@ -442,3 +442,22 @@ export async function syncReviews(env: Bindings, h: HospitalRow, entities: Entit
   await db.prepare("DELETE FROM reviews WHERE hospital_id = ? AND fetched_at < ?").bind(h.id, new Date(Date.now() - 90 * 86400_000).toISOString()).run();
   return { fetched, inserted, negative, newNegatives };
 }
+
+/** 특정 run 의 관측치로 검색 기회 요약(플랫폼별 커버율·본원/경쟁사 기회)을 계산만 한다(저장 안 함) — 추이용 */
+export async function opportunityOfRun(db: D1Database, hospitalId: number, runId: number) {
+  const obs = (await db.prepare("SELECT o.platform, o.entity_type, o.entity_id, o.shown, o.rank, k.text, k.monthly_pc, k.monthly_mobile FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.run_id = ? AND o.platform IN ('naver_place','google_business','google_serp','kakao_map')").bind(runId).all()).results as { platform: string; entity_type: string; entity_id: number | null; shown: number; rank: number | null; text: string; monthly_pc: number | null; monthly_mobile: number | null }[];
+  const hasSerp = obs.some((o) => o.platform === "google_serp");
+  const byPlat: Record<string, Map<string, KeywordRow>> = {};
+  for (const o of obs) {
+    const p = o.platform === "naver_place" ? "naver_place" : o.platform === "kakao_map" ? "kakao" : o.platform === "google_serp" || (o.platform === "google_business" && !hasSerp) ? "google" : null;
+    if (!p) continue;
+    byPlat[p] ||= new Map();
+    let row = byPlat[p].get(o.text);
+    if (!row) { row = { keyword: o.text, volume: o.monthly_pc == null && o.monthly_mobile == null ? null : (o.monthly_pc ?? 0) + (o.monthly_mobile ?? 0), self: { rank: null, shown: false }, competitors: {} }; byPlat[p].set(o.text, row); }
+    if (o.entity_type === "self") row.self = { rank: o.rank, shown: !!o.shown }; else row.competitors[`c${o.entity_id}`] = { rank: o.rank, shown: !!o.shown, name: "" };
+  }
+  const out: Record<string, { coverage: number | null; captured: number; pool: number; competitors: Record<string, number> }> = {};
+  for (const [p, m] of Object.entries(byPlat)) { const op = computeOpportunity(p, [...m.values()]); out[p] = { coverage: op.coverage, captured: op.captured, pool: op.pool, competitors: Object.fromEntries(Object.entries(op.competitors).map(([k, v]) => [k, v.captured])) }; }
+  void hospitalId;
+  return out;
+}

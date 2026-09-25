@@ -7,7 +7,7 @@ import { generateKeywords, normalizeTreatments, rankCandidates, type Candidate }
 import { fetchKeywordIdeas } from "../collectors/naver-searchad";
 import { resolveChannel } from "../collectors/youtube";
 import { limitsOf } from "../lib/plan-limits";
-import { runHospital, loadEntities, obsScore, parseJsonArr, usablePlatforms } from "../lib/measure";
+import { runHospital, loadEntities, obsScore, parseJsonArr, usablePlatforms, opportunityOfRun } from "../lib/measure";
 import { htmlSerp } from "../collectors/naver-html";
 import { collectNaverApi } from "../collectors/naver-api";
 import { buildWeeklyReport, PLATFORM_LABEL } from "../lib/report";
@@ -190,7 +190,7 @@ app.get("/app", async (c) => {
   const weeks = (await db.prepare("SELECT DISTINCT week_start FROM weekly_scores WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 2").bind(h.id).all()).results as { week_start: string }[];
   const week = weeks[0]?.week_start ?? null;
   const prevWeek = weeks[1]?.week_start ?? null;
-  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, insights: [], reviews: null, content: [], arrivals: [], opportunity: null };
+  const d: DashboardData = { week, total: { score: null, prev: null, sov: null, weighted: null, series: [] }, platforms: [], matrix: [], matrixPlatforms: [], competitors: [], selfScore: null, reputation: [], alerts: [], runs: [], compare, onboarded: !!h.onboarded_at, hasVolume: false, history: { runs: [], rankTable: [], dates: [], reviews: [], content: [], changes: [], prevDate: null }, insights: [], reviews: null, content: [], arrivals: [], opportunity: null };
   if (week) {
     const cur = (await db.prepare("SELECT platform, score, sov, weighted_score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, week).all()).results as { platform: string; score: number; sov: number | null; weighted_score: number | null }[];
     const prev = prevWeek ? ((await db.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ?").bind(h.id, prevWeek).all()).results as { platform: string; score: number }[]) : [];
@@ -278,6 +278,51 @@ app.get("/app", async (c) => {
     }
     d.alerts = (await db.prepare("SELECT severity, message, created_at FROM alerts WHERE hospital_id = ? ORDER BY id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["alerts"];
     d.runs = (await db.prepare("SELECT run_date, status, kind, error FROM crawl_runs WHERE hospital_id = ? ORDER BY run_date DESC, id DESC LIMIT 8").bind(h.id).all()).results as DashboardData["runs"];
+  }
+  // ── 추이·변화: 최근 run 최대 10개
+  if (week) {
+    const runs = ((await db.prepare("SELECT id, run_date, summary FROM crawl_runs WHERE hospital_id = ? AND status IN ('completed','blocked') ORDER BY run_date DESC, id DESC LIMIT 10").bind(h.id).all()).results as { id: number; run_date: string; summary: string }[]).reverse();
+    const compNames: Record<string, string> = {}; for (const x of d.competitors) compNames[`c${x.id}`] = x.name;
+    for (const r of runs) {
+      const sm = (() => { try { return JSON.parse(r.summary || "{}"); } catch { return {}; } })() as { total?: number; platforms?: Record<string, { score: number | null }> };
+      const op = await opportunityOfRun(db, h.id, r.id);
+      const wk = await db.prepare("SELECT weighted_score FROM weekly_scores WHERE hospital_id = ? AND platform = 'total' AND detail LIKE ?").bind(h.id, `%"runId":${r.id}%`).first<{ weighted_score: number | null }>();
+      d.history.runs.push({ date: r.run_date, runId: r.id, total: sm.total ?? null, weighted: wk?.weighted_score ?? null, platforms: Object.fromEntries(Object.entries(sm.platforms || {}).map(([k, v]) => [k, v.score])), coverage: Object.fromEntries(Object.entries(op).map(([k, v]) => [k, v.coverage])), selfCaptured: op.naver_place?.captured ?? null, competitors: Object.fromEntries(Object.entries(op.naver_place?.competitors || {}).map(([k, v]) => [compNames[k] || k, v])) });
+    }
+    d.history.dates = d.history.runs.map((r) => r.date);
+    // 키워드 순위 표 (플레이스, run 별)
+    if (runs.length) {
+      const ids = runs.map((r) => r.id);
+      const rows = (await db.prepare(`SELECT o.run_id, o.rank, o.shown, k.text, (COALESCE(k.monthly_pc,0)+COALESCE(k.monthly_mobile,0)) AS vol, k.monthly_pc IS NULL AND k.monthly_mobile IS NULL AS novol FROM observations o JOIN keywords k ON k.id = o.keyword_id WHERE o.hospital_id = ? AND o.entity_type = 'self' AND o.platform = 'naver_place' AND o.run_id IN (${ids.map(() => "?").join(",")}) AND k.is_active = 1`).bind(h.id, ...ids).all()).results as { run_id: number; rank: number | null; shown: number; text: string; vol: number; novol: number }[];
+      const byKw = new Map<string, { volume: number | null; ranks: (number | null)[]; shown: boolean[] }>();
+      for (const r of rows) { let e = byKw.get(r.text); if (!e) { e = { volume: r.novol ? null : r.vol, ranks: ids.map(() => null), shown: ids.map(() => false) }; byKw.set(r.text, e); } const i = ids.indexOf(r.run_id); e.ranks[i] = r.rank; e.shown[i] = !!r.shown; }
+      const val = (x: number | null) => (x == null ? 99 : x);
+      d.history.rankTable = [...byKw.entries()].map(([keyword, e]) => { const n = e.ranks.length; const cur = e.ranks[n - 1], prev = n > 1 ? e.ranks[n - 2] : undefined; return { keyword, volume: e.volume, ranks: e.ranks, shown: e.shown, change: prev === undefined ? null : val(prev) - val(cur) }; }).sort((a, b) => (b.volume ?? -1) - (a.volume ?? -1));
+    }
+    // 리뷰 수 추이 (플레이스 방문자 리뷰, 본원·경쟁사)
+    const rs = (await db.prepare("SELECT entity_type, entity_id, snapshot_date, review_count FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place' ORDER BY snapshot_date").bind(h.id).all()).results as { entity_type: string; entity_id: number | null; snapshot_date: string; review_count: number | null }[];
+    const groups = new Map<string, { x: string; y: number | null }[]>();
+    for (const r of rs) { const k = r.entity_type === "self" ? "self" : `c${r.entity_id}`; if (k !== "self" && !compNames[k]) continue; (groups.get(k) || groups.set(k, []).get(k)!).push({ x: r.snapshot_date, y: r.review_count }); }
+    d.history.reviews = [...groups.entries()].map(([k, pts]) => ({ entity: k === "self" ? h.name : compNames[k], self: k === "self", points: pts }));
+    // 콘텐츠 추이
+    const cs = (await db.prepare("SELECT platform, snapshot_date, followers, views_30d, detail FROM reputation_snapshots WHERE hospital_id = ? AND entity_type = 'self' AND (platform LIKE 'youtube:%' OR platform IN ('instagram','threads')) ORDER BY snapshot_date").bind(h.id).all()).results as { platform: string; snapshot_date: string; followers: number | null; views_30d: number | null; detail: string }[];
+    const cg = new Map<string, { label: string; followers: { x: string; y: number | null }[]; views: { x: string; y: number | null }[] }>();
+    for (const r of cs) { const label = r.platform === "instagram" ? "인스타그램" : r.platform === "threads" ? "스레드" : "유튜브 · " + ((JSON.parse(r.detail || "{}") as { title?: string }).title || ""); const e = cg.get(r.platform) || cg.set(r.platform, { label, followers: [], views: [] }).get(r.platform)!; e.followers.push({ x: r.snapshot_date, y: r.followers }); e.views.push({ x: r.snapshot_date, y: r.views_30d }); }
+    d.history.content = [...cg.values()];
+    // 변화 목록: 최근 run vs 직전 run
+    const H = d.history.runs; const cur = H[H.length - 1], prevR = H.length > 1 ? H[H.length - 2] : null;
+    if (cur && prevR) {
+      d.history.prevDate = prevR.date;
+      const ch = d.history.changes; const f = (v: number | null | undefined, dgt = 0) => (v == null ? "—" : v.toFixed(dgt));
+      if (cur.coverage.naver_place != null && prevR.coverage.naver_place != null) ch.push({ kind: "coverage", label: "네이버 플레이스 커버율", before: Math.round(prevR.coverage.naver_place * 100) + "%", after: Math.round(cur.coverage.naver_place * 100) + "%", delta: Math.round((cur.coverage.naver_place - prevR.coverage.naver_place) * 100), unit: "%p", good: cur.coverage.naver_place >= prevR.coverage.naver_place });
+      if (cur.total != null && prevR.total != null) ch.push({ kind: "score", label: "온라인 가시성 점수", before: f(prevR.total, 1), after: f(cur.total, 1), delta: Math.round((cur.total - prevR.total) * 10) / 10, unit: "점", good: cur.total >= prevR.total });
+      for (const k of ["google", "kakao"]) if (cur.coverage[k] != null && prevR.coverage[k] != null) ch.push({ kind: "coverage", label: (k === "google" ? "구글" : "카카오맵") + " 커버율", before: Math.round(prevR.coverage[k]! * 100) + "%", after: Math.round(cur.coverage[k]! * 100) + "%", delta: Math.round((cur.coverage[k]! - prevR.coverage[k]!) * 100), unit: "%p", good: cur.coverage[k]! >= prevR.coverage[k]! });
+      for (const r of d.history.rankTable.filter((x) => x.change != null && x.change !== 0).sort((a, b) => Math.abs(b.change!) * (b.volume ?? 1) - Math.abs(a.change!) * (a.volume ?? 1)).slice(0, 6)) { const n = r.ranks.length; const b = r.ranks[n - 2], a = r.ranks[n - 1]; ch.push({ kind: "rank", label: `「${r.keyword}」 플레이스 순위`, before: b == null ? "미노출" : b + "위", after: a == null ? "미노출" : a + "위", delta: r.change!, unit: "계단", good: r.change! > 0 }); }
+      for (const [name, v] of Object.entries(cur.competitors)) { const pv = prevR.competitors[name]; if (pv != null && v !== pv) ch.push({ kind: "competitor", label: `${name} 기회 점유`, before: pv.toLocaleString(), after: v.toLocaleString(), delta: v - pv, unit: "명", good: v < pv }); }
+      for (const rv of d.history.reviews) { const pts = rv.points.filter((p) => p.y != null); if (pts.length >= 2) { const a = pts[pts.length - 1], b = pts.find((p) => p.x <= prevR.date) || pts[0]; if (a.y! !== b.y! && a.x !== b.x) ch.push({ kind: "review", label: `${rv.entity} 방문자 리뷰 수`, before: b.y!.toLocaleString(), after: a.y!.toLocaleString(), delta: a.y! - b.y!, unit: "건", good: rv.self ? a.y! >= b.y! : null }); } }
+      for (const c of d.history.content) { const pts = c.followers.filter((p) => p.y != null); if (pts.length >= 2) { const a = pts[pts.length - 1], b = pts[pts.length - 2]; if (a.y !== b.y) ch.push({ kind: "content", label: `${c.label} 팔로워`, before: b.y!.toLocaleString(), after: a.y!.toLocaleString(), delta: a.y! - b.y!, unit: "명", good: a.y! >= b.y! }); } }
+      if (d.arrivals.length >= 2) { const a = d.arrivals[0], b = d.arrivals[1]; ch.push({ kind: "arrival", label: "주간 신환(검색)", before: `${b.first_visits}명(검색 ${b.search})`, after: `${a.first_visits}명(검색 ${a.search})`, delta: a.search - b.search, unit: "명", good: a.search >= b.search }); }
+    }
   }
   d.insights = buildInsights(d, h.name, parseJsonArr(h.key_treatments));
   return c.html(Dashboard({ h: hv(h), d }));

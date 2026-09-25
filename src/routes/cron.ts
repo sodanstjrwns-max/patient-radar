@@ -127,6 +127,38 @@ api.get("/api/v1/signals", async (c) => {
   return c.json({ service: "radar", signals });
 });
 
+/* ── 【2026-09-25】공급 API: PFM 퍼널 1단계(인지)용 요약 — 가시성 점수·점유율·검색 기회 커버율·놓친 키워드·내원 경로 ── */
+api.get("/api/v1/funnel-stats", async (c) => {
+  if (!c.env.PS_SERVICE_KEY) return err(c, "SERVICE_KEY_NOT_CONFIGURED", "공급 API 키가 설정되지 않았습니다.", 503);
+  const bearer = c.req.header("Authorization") || "";
+  if (!bearer.startsWith("Bearer ") || !(await equalSecret(bearer.slice(7), c.env.PS_SERVICE_KEY))) return err(c, "UNAUTHORIZED", "유효한 공급 API 인증이 필요합니다.", 401);
+  const hid = c.req.header("X-PS-Hospital-Id")?.trim();
+  if (!hid || hid.length > 200) return err(c, "MISSING_HOSPITAL_ID", "병원 ID 헤더가 필요합니다.", 400);
+  const h = await c.env.DB.prepare("SELECT id, name FROM hospitals WHERE ps_hospital_id = ?").bind(hid).first<{ id: number; name: string }>();
+  if (!h) return err(c, "HOSPITAL_NOT_MAPPED", "연결된 병원이 없습니다.", 404);
+  const w = await c.env.DB.prepare("SELECT week_start, score, weighted_score, sov, keyword_count, shown_count FROM weekly_scores WHERE hospital_id = ? AND platform = 'total' ORDER BY week_start DESC LIMIT 1").bind(h.id).first<Record<string, unknown>>();
+  const prev = w ? await c.env.DB.prepare("SELECT score, weighted_score FROM weekly_scores WHERE hospital_id = ? AND platform = 'total' AND week_start < ? ORDER BY week_start DESC LIMIT 1").bind(h.id, w.week_start).first<Record<string, unknown>>() : null;
+  const plats = w ? (await c.env.DB.prepare("SELECT platform, score FROM weekly_scores WHERE hospital_id = ? AND week_start = ? AND platform <> 'total'").bind(h.id, w.week_start).all()).results as { platform: string; score: number }[] : [];
+  const op = await c.env.DB.prepare("SELECT week_start, platform, pool, captured, coverage, detail FROM weekly_opportunity WHERE hospital_id = ? AND platform = 'naver_place' ORDER BY week_start DESC LIMIT 1").bind(h.id).first<Record<string, unknown>>();
+  let opportunity: Record<string, unknown> | null = null;
+  if (op) {
+    let d: Record<string, unknown> = {}; try { d = JSON.parse(String(op.detail || "{}")); } catch {}
+    const lost = (Array.isArray(d.lost) ? d.lost as Record<string, unknown>[] : []).slice().sort((a, b) => Number(b.lost || 0) - Number(a.lost || 0)).slice(0, 3)
+      .map((x) => ({ keyword: x.keyword, volume: x.volume, rank: x.rank ?? null, lost: x.lost, action: Array.isArray(x.actions) && x.actions.length ? String(x.actions[0]).slice(0, 160) : null }));
+    const comps = d.competitors && typeof d.competitors === "object" ? Object.values(d.competitors as Record<string, { name?: string; coverage?: number }>) : [];
+    const best = comps.reduce<{ name?: string; coverage?: number } | null>((m, x) => (!m || Number(x.coverage || 0) > Number(m.coverage || 0) ? x : m), null);
+    opportunity = { week_start: op.week_start, platform: op.platform, pool: op.pool, captured: op.captured, coverage: op.coverage, top_lost: lost, best_competitor: best ? { name: best.name, coverage: best.coverage } : null };
+  }
+  const ar = await c.env.DB.prepare("SELECT week_start, first_visits, answered, groups FROM weekly_arrivals WHERE hospital_id = ? ORDER BY week_start DESC LIMIT 1").bind(h.id).first<Record<string, unknown>>();
+  let arrivals: Record<string, unknown> | null = null;
+  if (ar) { let g: Record<string, number> = {}; try { g = JSON.parse(String(ar.groups || "{}")); } catch {} arrivals = { week_start: ar.week_start, first_visits: ar.first_visits, answered: ar.answered, groups: g }; }
+  return c.json({
+    service: "radar", hospital: h.name,
+    score: w ? { week_start: w.week_start, score: w.score, weighted_score: w.weighted_score ?? null, sov: w.sov, prev_score: prev?.score ?? null, prev_weighted: prev?.weighted_score ?? null, keyword_count: w.keyword_count, shown_count: w.shown_count, platforms: Object.fromEntries(plats.map((p) => [p.platform, p.score])) } : null,
+    opportunity, arrivals, as_of: new Date().toISOString(),
+  });
+});
+
 /* ── 어드민 ── */
 api.get("/admin", async (c) => {
   if (!c.env.ADMIN_SECRET) return c.text("admin not configured", 503);
