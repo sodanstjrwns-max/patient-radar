@@ -22,6 +22,6 @@ CREATE TABLE review_stats (
   stat_date TEXT NOT NULL,
   count_30d INTEGER NOT NULL DEFAULT 0, negative_30d INTEGER NOT NULL DEFAULT 0, replied_30d INTEGER NOT NULL DEFAULT 0,
   treatments TEXT NOT NULL DEFAULT '{}', complaints TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL,
-  UNIQUE(hospital_id, entity_type, COALESCE(entity_id, 0), platform, stat_date)
+  created_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX idx_review_stats_identity ON review_stats(hospital_id, entity_type, COALESCE(entity_id, 0), platform, stat_date);
