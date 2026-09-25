@@ -17,8 +17,8 @@ import { computeOpportunity, type KeywordRow } from "./opportunity";
 import { prescribe } from "./playbook";
 import { fetchArrivalStats } from "../collectors/form";
 import { collectYoutube } from "../collectors/youtube";
-import { collectInstagram, collectThreads } from "../collectors/meta";
-import { decryptToken } from "./crypto";
+import { collectInstagram, collectThreads, instagramRefresh, threadsRefresh } from "../collectors/meta";
+import { decryptToken, encryptToken } from "./crypto";
 import { localityCandidates } from "./keywords";
 import type { HospitalRow } from "./session";
 
@@ -383,12 +383,19 @@ export async function syncSocial(env: Bindings, h: HospitalRow, fetchImpl: typeo
     try { const y = await collectYoutube(h.youtube_channel_id, { YOUTUBE_API_KEY: env.YOUTUBE_API_KEY }, fetchImpl); await put("youtube", y.subscribers, y.views30d, { title: y.title, totalViews: y.totalViews, videoCount: y.videoCount, uploads30d: y.uploads30d, likes30d: y.likes30d, comments30d: y.comments30d, top: y.top }); out.push(`유튜브 구독자 ${y.subscribers ?? "—"} · 30일 조회 ${y.views30d.toLocaleString()} (영상 ${y.uploads30d}편)`); }
     catch (e) { out.push(`유튜브 오류 ${String(e).slice(0, 40)}`); }
   }
+  const nearExpiry = (iso: string | null) => !iso || new Date(iso).getTime() - Date.now() < 7 * 86400_000;
   if (h.ig_user_id && h.ig_token_enc && env.PS_SSO_SECRET) {
-    try { const ig = await collectInstagram(h.ig_user_id, await decryptToken(env.PS_SSO_SECRET, h.ig_token_enc), fetchImpl); await put("instagram", ig.followers, ig.views30d ?? ig.reach30d, { username: h.ig_username, mediaCount: ig.mediaCount, reach30d: ig.reach30d, views30d: ig.views30d, posts30d: ig.posts30d, top: ig.top }); out.push(`인스타그램 팔로워 ${ig.followers ?? "—"} · 30일 도달 ${ig.reach30d ?? "—"}`); }
+    try {
+      let tok = await decryptToken(env.PS_SSO_SECRET, h.ig_token_enc);
+      if (nearExpiry(h.ig_token_expires_at)) { try { const r = await instagramRefresh(tok, fetchImpl); tok = r.token; await env.DB.prepare("UPDATE hospitals SET ig_token_enc = ?, ig_token_expires_at = ? WHERE id = ?").bind(await encryptToken(env.PS_SSO_SECRET, tok), r.expiresAt, h.id).run(); } catch { /* 갱신 실패 시 기존 토큰으로 시도 */ } }
+      const ig = await collectInstagram(h.ig_user_id, tok, fetchImpl); await put("instagram", ig.followers, ig.views30d ?? ig.reach30d, { username: h.ig_username, mediaCount: ig.mediaCount, reach30d: ig.reach30d, views30d: ig.views30d, posts30d: ig.posts30d, top: ig.top }); out.push(`인스타그램 팔로워 ${ig.followers ?? "—"} · 30일 도달 ${ig.reach30d ?? "—"}`); }
     catch (e) { out.push(`인스타그램 오류 ${String(e).slice(0, 40)}`); }
   }
   if (h.threads_user_id && h.threads_token_enc && env.PS_SSO_SECRET) {
-    try { const th = await collectThreads(h.threads_user_id, await decryptToken(env.PS_SSO_SECRET, h.threads_token_enc), fetchImpl); await put("threads", th.followers, th.views30d, { username: h.threads_username, likes30d: th.likes30d, posts30d: th.posts30d }); out.push(`스레드 팔로워 ${th.followers ?? "—"} · 30일 조회 ${th.views30d ?? "—"}`); }
+    try {
+      let tok = await decryptToken(env.PS_SSO_SECRET, h.threads_token_enc);
+      if (nearExpiry(h.threads_token_expires_at)) { try { const r = await threadsRefresh(tok, fetchImpl); tok = r.token; await env.DB.prepare("UPDATE hospitals SET threads_token_enc = ?, threads_token_expires_at = ? WHERE id = ?").bind(await encryptToken(env.PS_SSO_SECRET, tok), r.expiresAt, h.id).run(); } catch { /* ignore */ } }
+      const th = await collectThreads(h.threads_user_id, tok, fetchImpl); await put("threads", th.followers, th.views30d, { username: h.threads_username, likes30d: th.likes30d, posts30d: th.posts30d }); out.push(`스레드 팔로워 ${th.followers ?? "—"} · 30일 조회 ${th.views30d ?? "—"}`); }
     catch (e) { out.push(`스레드 오류 ${String(e).slice(0, 40)}`); }
   }
   return out;

@@ -83,4 +83,28 @@ social.post("/app/settings/social-manual", async (c) => {
   }
   return c.redirect("/app/settings?ok=1#content");
 });
+/* ── Meta 콜백(앱 제거·데이터 삭제 요청): 연결 해제 처리. signed_request 는 앱 시크릿으로 검증한다. */
+async function verifySignedRequest(secret: string, sr: string): Promise<Record<string, unknown> | null> {
+  const [sig, payload] = sr.split(".");
+  if (!sig || !payload) return null;
+  const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const ok = await crypto.subtle.verify("HMAC", key, b64(sig), new TextEncoder().encode(payload));
+  if (!ok) return null;
+  try { return JSON.parse(new TextDecoder().decode(b64(payload))); } catch { return null; }
+}
+for (const kind of ["uninstall", "delete"]) social.post(`/api/meta/${kind}`, async (c) => {
+  const b = await c.req.parseBody(); const sr = String(b.signed_request || "");
+  const secrets = [c.env.META_APP_SECRET, c.env.THREADS_APP_SECRET].filter(Boolean) as string[];
+  let data: Record<string, unknown> | null = null;
+  for (const s of secrets) { data = await verifySignedRequest(s, sr); if (data) break; }
+  if (!data) return c.json({ error: { code: "BAD_SIGNATURE", message: "signed_request 검증 실패" } }, 400);
+  const uid = String(data.user_id || "");
+  if (uid) await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE hospitals SET ig_user_id = NULL, ig_username = NULL, ig_token_enc = NULL, ig_token_expires_at = NULL WHERE ig_user_id = ?").bind(uid),
+    c.env.DB.prepare("UPDATE hospitals SET threads_user_id = NULL, threads_username = NULL, threads_token_enc = NULL, threads_token_expires_at = NULL WHERE threads_user_id = ?").bind(uid),
+  ]);
+  const code = crypto.randomUUID().slice(0, 8);
+  return c.json({ url: `${new URL(c.req.url).origin}/privacy#deletion-${code}`, confirmation_code: code });
+});
 export default social;
