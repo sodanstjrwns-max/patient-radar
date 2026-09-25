@@ -38,6 +38,7 @@ npm run db:migrate:local            # 로컬 D1
 npm run dev -- --port 5179
 ```
 - 합성 SSO 로그인: sso.key 로 HS256 JWT(aud `radar`, hid `bdd-001`) → `/api/auth/hub/callback?sso_token=` (마스터 문서 §6 레시피).
+- 경쟁 병원 정본 = 허브 프로필(2026-09-25): 온보딩 3단계·설정이 허브 `hospital_profile.competitors`를 먼저 반입하고(없을 때만 플레이스 추천), 저장한 이름·별칭·플레이스 ID는 `PUT /api/v1/hospital-profile/competitors`로 허브에 되돌린다.
 - 로컬 E2E(2026-09-23): 온보딩 → 첫 측정 37초 → 총점 51.5 · 천안 임플란트 플레이스 3위 · 경쟁 3곳 리뷰 수까지 → 대시보드·리포트·`/api/v1/signals`·크론 `due`/`run-hospital`/`weekly-reports` 통과.
 
 ## 배포
