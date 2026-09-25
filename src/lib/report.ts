@@ -14,7 +14,7 @@ export type ReportContent = {
   reviewNote?: string | null;
   content?: { label: string; followers: number | null; views: number | null }[];
   arrivals?: { week_start: string; first_visits: number; search: number; ai: number; sns: number; content: number; referral: number }[];
-  opportunity?: { pool: number; captured: number; coverage: number | null; prevCoverage: number | null; lost: { keyword: string; volume: number; rank: number | null; lost: number; gainTop3: number; above: string[]; actions?: string[] }[]; competitors: { name: string; captured: number }[] } | null;
+  opportunity?: { pool: number; captured: number; coverage: number | null; prevCoverage: number | null; lost: { keyword: string; volume: number; rank: number | null; lost: number; gainNext: number; nextRank?: number; above: string[]; actions?: string[] }[]; competitors: { name: string; captured: number }[] } | null;
 };
 export const PLATFORM_LABEL: Record<string, string> = { naver_serp: "네이버 통합검색", naver_place: "네이버 플레이스", google: "구글", kakao: "카카오맵", signal_ai: "AI (시그널)", total: "온라인 가시성" };
 
@@ -77,7 +77,7 @@ export async function buildWeeklyReport(db: D1Database, hospitalId: number, week
   if (oppRow) {
     const det = JSON.parse(oppRow.detail || "{}") as { lost?: ReportContent["opportunity"] extends infer T ? T extends { lost: infer L } ? L : never : never; competitors?: Record<string, { name: string; captured: number }> };
     opportunity = { pool: oppRow.pool, captured: oppRow.captured, coverage: oppRow.coverage, prevCoverage: oppPrev?.coverage ?? null, lost: (det.lost || []).slice(0, 5), competitors: Object.values(det.competitors || {}).sort((a, b) => b.captured - a.captured) };
-    if (opportunity.lost[0]) notes.unshift(`이번 주 가장 큰 기회는 「${opportunity.lost[0].keyword}」(월 ${opportunity.lost[0].volume.toLocaleString()}회, 현재 ${opportunity.lost[0].rank ?? "미노출"}${opportunity.lost[0].rank ? "위" : ""}) — 3위 안에 들면 월 약 ${opportunity.lost[0].gainTop3.toLocaleString()}회 더 보입니다.`);
+    if (opportunity.lost[0]) notes.unshift(`이번 주 가장 큰 기회는 「${opportunity.lost[0].keyword}」(월 ${opportunity.lost[0].volume.toLocaleString()}회, 현재 ${opportunity.lost[0].rank ?? "미노출"}${opportunity.lost[0].rank ? "위" : ""}) ${opportunity.lost[0].gainNext > 0 ? ` — ${opportunity.lost[0].rank == null ? "플레이스 블록에 들어가면" : `${opportunity.lost[0].nextRank ?? opportunity.lost[0].rank - 1}위로 오르면`} 월 약 ${opportunity.lost[0].gainNext.toLocaleString()}회 더 보입니다.` : "."}`);
   }
   const arrivals = ((await db.prepare("SELECT week_start, first_visits, groups FROM weekly_arrivals WHERE hospital_id = ? AND week_start <= ? ORDER BY week_start DESC LIMIT 4").bind(hospitalId, week).all()).results as { week_start: string; first_visits: number; groups: string }[]).map((a) => { const g = JSON.parse(a.groups || "{}"); return { week_start: a.week_start, first_visits: a.first_visits, search: g.search || 0, ai: g.ai || 0, sns: g.sns || 0, content: g.content || 0, referral: g.referral || 0 }; });
   const rvSelf = await db.prepare("SELECT count_30d, negative_30d, replied_30d, treatments, complaints, avg_len, long_count, photo_count FROM review_stats WHERE hospital_id = ? AND platform = 'naver_place' AND entity_type = 'self' ORDER BY stat_date DESC LIMIT 1").bind(hospitalId).first<{ count_30d: number; negative_30d: number; replied_30d: number; treatments: string; complaints: string; avg_len: number | null; long_count: number; photo_count: number }>();
@@ -99,7 +99,7 @@ export function reportToText(r: ReportContent): string {
     const o = r.opportunity;
     l.push(""); l.push(`검색 기회 (네이버 플레이스): 월 ${o.pool.toLocaleString()}회 검색 중 우리가 보인 기회 ${o.captured.toLocaleString()}회 (${o.coverage != null ? Math.round(o.coverage * 100) + "%" : "—"}${o.prevCoverage != null && o.coverage != null ? `, 지난주 ${Math.round(o.prevCoverage * 100)}%` : ""})`);
     l.push("놓친 기회 순위");
-    for (const x of o.lost) l.push(`- ${x.keyword} · 월 ${x.volume.toLocaleString()}회 · 우리 ${x.rank ?? "미노출"}${x.rank ? "위" : ""} · 놓침 ${x.lost.toLocaleString()}회${x.gainTop3 > 0 ? ` · 3위 진입 시 +${x.gainTop3.toLocaleString()}` : ""}${x.above.length ? ` · 위: ${x.above.join(", ")}` : ""}`);
+    for (const x of o.lost) l.push(`- ${x.keyword} · 월 ${x.volume.toLocaleString()}회 · 우리 ${x.rank ?? "미노출"}${x.rank ? "위" : ""} · 놓침 ${x.lost.toLocaleString()}회${x.gainNext > 0 ? ` · 한 계단 오르면 +${x.gainNext.toLocaleString()}` : ""}${x.above.length ? ` · 위: ${x.above.join(", ")}` : ""}`);
     for (const x of o.lost.slice(0, 3)) if (x.actions?.length) { l.push(`  → ${x.keyword}: ${x.actions[0]}`); }
     if (r.reviewNote) { l.push(""); l.push("리뷰: " + r.reviewNote); }
     if (r.content?.length) { l.push(""); l.push("콘텐츠 도달 (최근 30일): " + r.content.map((x) => `${x.label} 구독·팔로워 ${x.followers?.toLocaleString() ?? "—"} · 조회 ${x.views?.toLocaleString() ?? "—"}`).join(" / ")); }

@@ -152,7 +152,7 @@ export function FirstRun({ h, ready, reasons, result, lines }: { h: { name: stri
 }
 
 /* ───────── 대시보드 ───────── */
-export type LostItem = { keyword: string; volume: number; rank: number | null; lost: number; gainTop3: number; above: string[]; actions?: string[] };
+export type LostItem = { keyword: string; volume: number; rank: number | null; blockSize?: number | null; lost: number; gainNext: number; nextRank?: number; above: string[]; actions?: string[] };
 export type DashboardData = {
   week: string | null;
   total: { score: number | null; prev: number | null; sov: number | null; weighted: number | null; series: { week: string; score: number }[]
@@ -285,11 +285,11 @@ export function Dashboard({ h, d }: { h: { name: string; plan: string }; d: Dash
                   {d.opportunity.competitors.map((c) => <div class="bar-row"><span class="bar-label">{c.name}</span><span class="bar" style={`width:${Math.max(2, Math.round((c.coverage ?? 0) * 100))}%`} /><span class="bar-val">{c.captured.toLocaleString()}</span></div>)}
                 </div>
               </div>
-              <div class="table-scroll"><table class="matrix"><thead><tr><th>키워드</th><th>월 검색</th><th>우리</th><th>놓침</th><th>3위 진입 시</th><th>위에 있는 병원</th><th></th></tr></thead>
+              <div class="table-scroll"><table class="matrix"><thead><tr><th>키워드</th><th>월 검색</th><th>우리</th><th>놓침</th><th>한 계단 오르면</th><th>위에 있는 병원</th><th></th></tr></thead>
                 <tbody>{d.opportunity.lost.map((l) => [
-                  <tr><td class="kw">{l.keyword}</td><td>{l.volume.toLocaleString()}</td><td>{rankCell(l.rank, false)}</td><td><b>{l.lost.toLocaleString()}</b></td><td class="muted">{l.gainTop3 > 0 ? "+" + l.gainTop3.toLocaleString() : "—"}</td><td class="small muted">{l.above.length ? l.above.slice(0, 2).join(" · ") : (l.rank == null ? "경쟁사도 없음" : "—")}</td><td>{l.actions?.length ? <details class="rx-d"><summary>이렇게</summary><ul>{l.actions.map((a) => <li>{a}</li>)}</ul></details> : null}</td></tr>,
+                  <tr><td class="kw">{l.keyword}</td><td>{l.volume.toLocaleString()}</td><td>{rankCell(l.rank, false)}</td><td><b>{l.lost.toLocaleString()}</b></td><td class="muted">{l.gainNext > 0 ? <span>+{l.gainNext.toLocaleString()} <small>{l.rank == null ? "블록 진입" : `${l.nextRank ?? l.rank - 1}위`}</small></span> : "—"}</td><td class="small muted">{l.above.length ? l.above.slice(0, 2).join(" · ") : (l.rank == null ? "경쟁사도 없음" : "—")}</td><td>{l.actions?.length ? <details class="rx-d"><summary>이렇게</summary><ul>{l.actions.map((a) => <li>{a}</li>)}</ul></details> : null}</td></tr>,
                 ])}</tbody></table></div>
-              <p class="muted small">검색 기회 = 월 검색수 × 순위별 노출 확률(1위 100 · 2위 80 · 3위 65 · 4위 45 · 5위 35 · 6~10위 15 · 다른 섹션 10%). 본 기회의 추정치이지 클릭 수가 아닙니다.</p>
+              <p class="muted small">검색 기회 = 월 검색수 × 순위별 노출 확률. 기준은 네이버 모바일 통합검색의 <b>플레이스 블록</b>(키워드마다 자연 카드 수를 실측, 보통 3~5개)입니다. 블록 안 1위 100 · 2위 85 · 3위 75 · 4위 65 · 5위 55%, 블록 밖('더보기' 뒤) 15%, 10위 밖 5%, 다른 섹션에만 보이면 10%. 시선 점유 추정치이지 클릭 수가 아닙니다. '한 계단 오르면'은 미노출이면 블록 마지막 자리, 그 외엔 바로 위 순위에 올랐을 때의 증가분입니다.</p>
             </Sec>
           ) : null}
 
@@ -472,7 +472,7 @@ export function ReportView({ h, r }: { h: { name: string; plan: string }; r: Rep
         {r.opportunity ? (<>
           <h2>검색 기회 <small class="muted">네이버 플레이스</small></h2>
           <p>월 <b>{r.opportunity.pool.toLocaleString()}</b>회 검색 중 우리가 보인 기회 <b>{r.opportunity.captured.toLocaleString()}</b>회 ({pct(r.opportunity.coverage)}{r.opportunity.prevCoverage != null ? <span class="muted">, 지난주 {pct(r.opportunity.prevCoverage)}</span> : null})</p>
-          <table class="matrix"><thead><tr><th>놓친 기회</th><th>월 검색</th><th>우리</th><th>놓침</th><th>3위 진입 시</th></tr></thead><tbody>{r.opportunity.lost.map((x) => <tr><td>{x.keyword}</td><td>{x.volume.toLocaleString()}</td><td>{rankCell(x.rank, false)}</td><td><b>{x.lost.toLocaleString()}</b></td><td class="muted">{x.gainTop3 > 0 ? "+" + x.gainTop3.toLocaleString() : "—"}</td></tr>)}</tbody></table>
+          <table class="matrix"><thead><tr><th>놓친 기회</th><th>월 검색</th><th>우리</th><th>놓침</th><th>한 계단 오르면</th></tr></thead><tbody>{r.opportunity.lost.map((x) => <tr><td>{x.keyword}</td><td>{x.volume.toLocaleString()}</td><td>{rankCell(x.rank, false)}</td><td><b>{x.lost.toLocaleString()}</b></td><td class="muted">{x.gainNext > 0 ? "+" + x.gainNext.toLocaleString() : "—"}</td></tr>)}</tbody></table>
         </>) : null}
         <h2>플랫폼별</h2>
         <table class="matrix"><tbody>{r.platforms.map((p) => <tr><td>{p.label}</td><td><b>{fmt(p.score, 1)}</b></td><td>{delta(p.score, p.prev)}</td><td class="muted">{p.sov != null ? "점유율 " + pct(p.sov) : ""}</td></tr>)}</tbody></table>
@@ -503,7 +503,7 @@ export function AdminPage({ hospitals, runs, alerts, config, flash }: { hospital
         <tbody>{hospitals.map((x) => <tr><td>{String(x.id)}</td><td>{String(x.name)}</td><td class="muted small">{String(x.ps_hospital_id ?? "")}</td>
           <td><form method="post" action={"/admin/plan/" + x.id} class="inline"><select name="plan">{["FREE", "S", "M", "L"].map((p) => <option value={p} selected={p === x.plan}>{p}</option>)}</select><button class="button button-small button-outline">저장</button></form></td>
           <td>{x.onboarded_at ? "✓" : "—"}</td><td>{String(x.keywords)}</td><td class="small">{String(x.last_run ?? "—")} {String(x.last_status ?? "")}</td><td>{x.week_score == null ? "—" : String(x.week_score)}</td>
-          <td><form method="post" action={"/admin/run/" + x.id} class="inline"><button class="button button-small button-primary">지금 측정</button></form> <form method="post" action={"/admin/form-key/" + x.id} class="inline"><input type="password" name="key" placeholder={x.has_form_key ? "폼 키 설정됨 · 교체" : "폼 연동 키 pfk_…"} style="width:150px" /><button class="button button-small button-outline">저장</button></form></td></tr>)}</tbody></table></div></section>
+          <td><form method="post" action={"/admin/run/" + x.id} class="inline"><button class="button button-small button-primary">지금 측정</button></form> <form method="post" action={"/admin/recompute/" + x.id} class="inline"><button class="button button-small button-outline" title="재수집 없이 마지막 측정으로 기회·처방만 다시 계산">재계산</button></form> <form method="post" action={"/admin/form-key/" + x.id} class="inline"><input type="password" name="key" placeholder={x.has_form_key ? "폼 키 설정됨 · 교체" : "폼 연동 키 pfk_…"} style="width:150px" /><button class="button button-small button-outline">저장</button></form></td></tr>)}</tbody></table></div></section>
       <section class="grid-2">
         <div class="card"><h2>최근 실행</h2><ul class="runs">{runs.map((r) => <li><span>{String(r.run_date)} #{String(r.hospital_id)}</span><span class={"status " + r.status}>{String(r.status)}</span><span class="muted small">{String(r.kind)} {r.error ? String(r.error).slice(0, 80) : ""}</span></li>)}</ul></div>
         <div class="card"><h2>경보</h2><ul class="alerts">{alerts.map((a) => <li class={String(a.severity)}><span class="sev">{String(a.severity)}</span>#{String(a.hospital_id ?? "-")} {String(a.message)}<small class="muted">{String(a.created_at).slice(0, 16)}</small></li>)}</ul>

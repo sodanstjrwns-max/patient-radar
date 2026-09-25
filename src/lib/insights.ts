@@ -11,9 +11,9 @@ export function buildInsights(d: DashboardData, hospitalName: string, keyTreatme
   if (o && np) {
     out.push({ tone: np.coverage != null && np.coverage < 0.5 ? "warn" : "info", icon: "◎", title: `월 ${n(o.pool)}명이 이 진료를 검색하고, 우리는 그중 ${n(np.captured)}명에게 보였습니다 (${pct(np.coverage)})`, evidence: `네이버 플레이스 · 활성 키워드 ${d.matrix.length}개 기준${np.prev != null ? ` · 지난주 ${pct(np.prev)}` : ""}`, rank: 100 });
     const top = o.lost[0];
-    if (top && top.lost > 0) out.push({ tone: "bad", icon: "▼", title: `가장 큰 구멍은 「${top.keyword}」— 월 ${n(top.lost)}명을 놓치고 있습니다`, evidence: `월 ${n(top.volume)}회 검색 · 우리 ${top.rank == null ? "미노출" : top.rank + "위"}${top.above.length ? ` · 위: ${top.above.slice(0, 2).join(", ")}` : ""}${top.gainTop3 > 0 ? ` · 3위에 들면 +${n(top.gainTop3)}명` : ""}`, action: top.actions?.[0], rank: 95 });
+    if (top && top.lost > 0) out.push({ tone: "bad", icon: "▼", title: `가장 큰 구멍은 「${top.keyword}」— 월 ${n(top.lost)}명을 놓치고 있습니다`, evidence: `월 ${n(top.volume)}회 검색 · 우리 ${top.rank == null ? "미노출" : top.rank + "위"}${top.above.length ? ` · 위: ${top.above.slice(0, 2).join(", ")}` : ""}${top.gainNext > 0 ? ` · ${top.rank == null ? `블록에 들어가면` : `${top.nextRank}위로 오르면`} +${n(top.gainNext)}명` : ""}`, action: top.actions?.[0], rank: 95 });
     const empty = o.lost.find((l) => l.rank == null && !l.above.length && l.volume >= 100);
-    if (empty) out.push({ tone: "good", icon: "★", title: `「${empty.keyword}」는 경쟁사도 없는 빈자리입니다 — 월 ${n(empty.volume)}명`, evidence: "네이버 플레이스 상위 5에 어느 병원도 없음. 먼저 등록하면 그대로 1위", action: empty.actions?.[0], rank: 90 });
+    if (empty) out.push({ tone: "good", icon: "★", title: `「${empty.keyword}」는 경쟁사도 없는 빈자리입니다 — 월 ${n(empty.volume)}명`, evidence: "통합검색 플레이스 블록에 등록한 경쟁 병원이 하나도 없음. 먼저 잡으면 그대로 위", action: empty.actions?.[0], rank: 90 });
     const bigger = o.competitors.filter((c) => c.captured > o.selfCaptured).sort((a, b) => b.captured - a.captured)[0];
     if (bigger) out.push({ tone: "warn", icon: "⇄", title: `${bigger.name}이(가) 우리보다 월 ${n(bigger.captured - o.selfCaptured)}명 더 보입니다`, evidence: `기회 점유 ${n(bigger.captured)} vs 우리 ${n(o.selfCaptured)} · 같은 키워드 세트`, rank: 80 });
     const missingKey = keyTreatments.map((t) => o.lost.find((l) => l.rank == null && l.keyword.includes(t))).find(Boolean);

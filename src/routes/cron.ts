@@ -4,7 +4,7 @@ import type { Bindings } from "../lib/config";
 import { platformAvailability } from "../lib/config";
 import { equalSecret, adminAuthorized, issueAdminSession } from "../lib/security";
 import type { HospitalRow } from "../lib/session";
-import { runHospital, syncReviews, loadEntities } from "../lib/measure";
+import { runHospital, syncReviews, loadEntities, computeOpportunities } from "../lib/measure";
 import { limitsOf } from "../lib/plan-limits";
 import { buildWeeklyReport, reportToText, sendMail, sendOpsAlert } from "../lib/report";
 import { kstDate, kstIso, weekStart } from "../lib/time";
@@ -191,6 +191,17 @@ api.post("/admin/run/:id", async (c) => {
   if (!h) return c.text("no hospital", 404);
   const r = await runHospital(c.env, h, { kind: "manual", batch: 40, finalizeEarly: true });
   return c.redirect("/admin?msg=" + encodeURIComponent(r.ok ? (r.done ? `#${h.id} 측정 완료 · 총점 ${r.total ?? "—"}` : `#${h.id} 부분 처리`) : `#${h.id} 실패: ${r.skipped || r.error || "blocked"}`));
+});
+/** 마지막 완료 run 의 관측치로 검색 기회·처방만 다시 계산(재수집 없음) — 곡선·처방 규칙을 바꿨을 때 */
+api.post("/admin/recompute/:id", async (c) => {
+  if (!(await adminAuthorized(c))) return c.text("forbidden", 403);
+  const h = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(Number(c.req.param("id"))).first<HospitalRow>();
+  if (!h) return c.text("no hospital", 404);
+  const run = await c.env.DB.prepare("SELECT id, run_date FROM crawl_runs WHERE hospital_id = ? AND status = 'completed' ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number; run_date: string }>();
+  if (!run) return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} 완료된 측정이 없습니다`));
+  const week = weekStart(new Date(run.run_date + "T12:00:00+09:00"));
+  try { await computeOpportunities(c.env.DB, h.id, run.id, week); } catch (e) { return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} 재계산 실패: ${String(e).slice(0, 80)}`)); }
+  return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} run ${run.id}(${run.run_date}) 기회·처방 재계산 완료`));
 });
 api.post("/admin/plan/:id", async (c) => {
   if (!(await adminAuthorized(c))) return c.text("forbidden", 403);
