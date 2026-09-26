@@ -44,7 +44,7 @@ a{color:inherit;text-decoration:none}a:hover{color:var(--accent)}
 .sec-title{font-size:16px;font-weight:700;letter-spacing:-.01em}.sec-sub{font-size:12.5px;color:var(--muted)}.sec-chev{margin-left:auto;color:var(--muted);transform:rotate(90deg);transition:transform .15s}.sec[open]>.sec-chev,.sec[open]>summary .sec-chev{transform:rotate(-90deg)}
 .sec-body{padding:0 20px 20px;display:grid;gap:14px}
 /* 폼 */
-.form{display:grid;gap:14px}.form.two-col{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}.form label{display:grid;gap:6px;font-size:13px;color:var(--muted)}
+.form{display:grid;gap:14px}.form.two-col{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}.form label{display:block;font-size:13px;color:var(--muted)}.form label>input,.form label>select,.form label>textarea,.form label>div{display:block;margin-top:6px}/* 2026-09-26 grid 는 괄호 예시·닫는 괄호를 줄마다 쪼갰다 */
 .form input,.form select,.form textarea{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line2);background:#fff;color:var(--text);font:inherit}
 .form input:focus,.form select:focus,.form textarea:focus{outline:2px solid rgba(107,66,38,.35);outline-offset:1px;border-color:var(--accent)}
 .kw-grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}.kw-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--text);font-size:14px}.kw-item input{width:auto;margin:0;accent-color:var(--accent)}.kw-item .kw-text{flex:1}

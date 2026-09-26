@@ -32,7 +32,7 @@ export function AppLayout({ title, hospital, active, children, flash }: { title:
           <meta name="robots" content="noindex,nofollow" />
           <title>{title} · {APP_NAME.en}</title>
           <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
-          <link rel="stylesheet" href="/static/app.css" />
+          <link rel="stylesheet" href="/static/app.css?v=20260926a" />
         </head>
         <body class="app-body">
           <header class="app-header">
