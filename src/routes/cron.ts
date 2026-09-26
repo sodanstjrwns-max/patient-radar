@@ -46,6 +46,14 @@ api.post("/api/cron/run-hospital/:id", async (c) => {
   return c.json(r, r.ok ? 200 : 200);
 });
 
+/** 【2026-09-26】크론 워커가 병원 1곳씩 부르도록 활성 병원 id 목록 (200병원 대비 — 한 요청에 전 병원을 돌지 않는다) */
+api.get("/api/cron/active-hospitals", async (c) => {
+  if (!c.env.CRON_SECRET) return err(c, "CRON_NOT_CONFIGURED", "크론 시크릿이 필요합니다.", 503);
+  if (!(await cronAuth(c))) return err(c, "UNAUTHORIZED", "크론 인증이 필요합니다.", 401);
+  const rows = (await c.env.DB.prepare("SELECT id FROM hospitals WHERE status = 'active' AND onboarded_at IS NOT NULL ORDER BY id").all()).results as { id: number }[];
+  return c.json({ ids: rows.map((r) => r.id), naver_html: platformAvailability(c.env).naverMode === "html" });
+});
+
 /** 매일: 리뷰 본문 수집 + 부정 리뷰 즉시 메일 (네이버 HTML 모드일 때만) */
 api.post("/api/cron/reviews", async (c) => {
   if (!c.env.CRON_SECRET) return err(c, "CRON_NOT_CONFIGURED", "크론 시크릿이 필요합니다.", 503);
@@ -70,8 +78,8 @@ api.post("/api/cron/reviews", async (c) => {
         }
       }
       out.push({ id: h.id, fetched: r.fetched, inserted: r.inserted, negative: r.negative, mailed });
-    } catch (e) { out.push({ id: h.id, error: String(e).slice(0, 80) }); if (String(e).includes("NAVER_BLOCKED")) break; }
-    await new Promise((res) => setTimeout(res, 2000));
+    } catch (e) { out.push({ id: h.id, error: String(e).slice(0, 80), blocked: String(e).includes("NAVER_BLOCKED") }); if (String(e).includes("NAVER_BLOCKED")) break; }
+    if (!only) await new Promise((res) => setTimeout(res, 2000));   // 병원 1곳 호출(워커 분할)이면 쉬는 건 워커가 한다
   }
   return c.json({ date: kstDate(), results: out });
 });
@@ -81,7 +89,8 @@ api.post("/api/cron/weekly-reports", async (c) => {
   // 월요일 아침 실행 → 지난주(월~일) 측정분. ?week=YYYY-MM-DD 로 지정 가능.
   const week = c.req.query("week") || weekStart(new Date(Date.now() - 7 * 86400_000));
   const send = c.req.query("send") !== "0";
-  const hospitals = (await c.env.DB.prepare("SELECT h.id, h.name FROM hospitals h WHERE h.status = 'active' AND h.onboarded_at IS NOT NULL").all()).results as { id: number; name: string }[];
+  const onlyId = Number(c.req.query("hospital") || 0) || null;   // 【2026-09-26】워커가 병원별로 분할 호출
+  const hospitals = (await c.env.DB.prepare(`SELECT h.id, h.name FROM hospitals h WHERE h.status = 'active' AND h.onboarded_at IS NOT NULL ${onlyId ? "AND h.id = ?" : ""}`).bind(...(onlyId ? [onlyId] : [])).all()).results as { id: number; name: string }[];
   const out: Record<string, unknown>[] = [];
   for (const h of hospitals) {
     const r = await buildWeeklyReport(c.env.DB, h.id, week);
