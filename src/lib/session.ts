@@ -1,6 +1,7 @@
 import { getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Context, MiddlewareHandler } from "hono";
 import type { Bindings } from "./config";
+import { withHubPlan, type HubEntitlement } from "./hub-entitlement";
 
 export const SESSION_COOKIE = "radar_session";
 export type Session = { userId: number; hospitalId: number; exp: number };
@@ -26,6 +27,8 @@ export type HospitalRow = {
   youtube_channel_id: string | null; youtube_channel_title: string | null; youtube_channels: string;
   ig_user_id: string | null; ig_username: string | null; ig_token_enc: string | null; ig_token_expires_at: string | null;
   threads_user_id: string | null; threads_username: string | null; threads_token_enc: string | null; threads_token_expires_at: string | null;
+  /** 허브 올패스 합성 후: plan = 유효 플랜, local_plan = DB 원래 값 (withHubPlan) */
+  local_plan?: string; hub_ent?: HubEntitlement | null;
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,6 +61,6 @@ export const requireSession: MiddlewareHandler<AppEnv> = async (c, next) => {
     return c.redirect("/?auth=hospital_missing");
   }
   c.set("session", s);
-  c.set("hospital", h);
+  c.set("hospital", await withHubPlan(c.env, h)); // 허브 올패스 → 유효 플랜(올려주기만, DB 불변)
   await next();
 };

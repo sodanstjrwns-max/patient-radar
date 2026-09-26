@@ -6,6 +6,7 @@ import { equalSecret, adminAuthorized, issueAdminSession } from "../lib/security
 import type { HospitalRow } from "../lib/session";
 import { runHospital, syncReviews, loadEntities, computeOpportunities, syncPrescriptions, refreshPlaceSnapshots } from "../lib/measure";
 import { limitsOf } from "../lib/plan-limits";
+import { withHubPlan, clearHubEntitlement } from "../lib/hub-entitlement";
 import { buildWeeklyReport, reportToText, sendMail, sendOpsAlert } from "../lib/report";
 import { kstDate, kstIso, weekStart } from "../lib/time";
 import { AdminLogin, AdminPage } from "../views-app";
@@ -24,7 +25,9 @@ api.get("/api/cron/due", async (c) => {
   const kst = new Date(Date.now() + 9 * 3600_000);
   const dow = (kst.getUTCDay() + 6) % 7; // 월=0
   const force = c.req.query("all") === "1";
-  const rows = (await c.env.DB.prepare("SELECT id, plan FROM hospitals WHERE status = 'active' AND onboarded_at IS NOT NULL ORDER BY id").all()).results as { id: number; plan: string }[];
+  const raw = (await c.env.DB.prepare("SELECT id, plan, ps_hospital_id FROM hospitals WHERE status = 'active' AND onboarded_at IS NOT NULL ORDER BY id").all()).results as { id: number; plan: string; ps_hospital_id: string | null }[];
+  // L 추가 측정 판정에 허브 올패스 유효 플랜을 쓴다(캐시 30분, 실패 시 로컬 플랜)
+  const rows = dow === 3 && !force ? await Promise.all(raw.map((h) => withHubPlan(c.env, h))) : raw;
   const due = rows.filter((h) => force || (dow <= 4 && (h.id % 5 === dow || (h.plan === "L" && dow === 3)))).map((h) => h.id);
   return c.json({ date: kstDate(), weekday: dow, due });
 });
@@ -32,8 +35,9 @@ api.get("/api/cron/due", async (c) => {
 api.post("/api/cron/run-hospital/:id", async (c) => {
   if (!c.env.CRON_SECRET) return err(c, "CRON_NOT_CONFIGURED", "크론 시크릿이 필요합니다.", 503);
   if (!(await cronAuth(c))) return err(c, "UNAUTHORIZED", "크론 인증이 필요합니다.", 401);
-  const h = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ? AND status = 'active'").bind(Number(c.req.param("id"))).first<HospitalRow>();
-  if (!h) return err(c, "HOSPITAL_NOT_FOUND", "병원이 없습니다.", 404);
+  const row = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ? AND status = 'active'").bind(Number(c.req.param("id"))).first<HospitalRow>();
+  if (!row) return err(c, "HOSPITAL_NOT_FOUND", "병원이 없습니다.", 404);
+  const h = await withHubPlan(c.env, row);
   const kind = c.req.query("kind") === "manual" ? "manual" : "weekly";
   const batch = Math.min(Math.max(Number(c.req.query("batch") || 6), 1), 40);
   const r = await runHospital(c.env, h, { kind, batch });
@@ -50,7 +54,8 @@ api.post("/api/cron/reviews", async (c) => {
   const only = Number(c.req.query("hospital") || 0) || null;
   const hospitals = (await c.env.DB.prepare(`SELECT * FROM hospitals WHERE status = 'active' AND onboarded_at IS NOT NULL ${only ? "AND id = ?" : ""} ORDER BY id`).bind(...(only ? [only] : [])).all()).results as HospitalRow[];
   const out: Record<string, unknown>[] = [];
-  for (const h of hospitals) {
+  for (const row of hospitals) {
+    const h = await withHubPlan(c.env, row);
     try {
       const entities = (await loadEntities(c.env.DB, h, limitsOf(h.plan).competitors));
       const r = await syncReviews(c.env, h, entities);
@@ -96,6 +101,22 @@ api.post("/api/cron/weekly-reports", async (c) => {
     out.push({ id: h.id, built: true, sent: m.ok, error: m.error });
   }
   return c.json({ week, results: out });
+});
+
+/* ── 허브 → 레이더 이벤트 웹훅: POST /api/v1/hub-events (Bearer PS_SSO_SECRET, 형제 서비스와 같은 방식) ──
+   subscription_updated = 올패스·단품 구독 변경 → 그 병원 권한 캐시 삭제(다음 판정 때 허브에서 다시 읽음).
+   profile_updated 등 그 밖의 type 은 레이더가 허브 프로필을 캐시하지 않으므로 수신 확인만. */
+api.post("/api/v1/hub-events", async (c) => {
+  const secret = c.env.PS_SSO_SECRET?.trim();
+  const bearer = c.req.header("Authorization") || "";
+  const token = bearer.startsWith("Bearer ") ? bearer.slice(7).trim() : "";
+  if (!secret || !token || !(await equalSecret(token, secret))) return err(c, "UNAUTHORIZED", "유효하지 않은 인증입니다.", 401);
+  const body = (await c.req.json().catch(() => null)) as { type?: unknown; ps_hospital_id?: unknown } | null;
+  const hid = typeof body?.ps_hospital_id === "string" ? body.ps_hospital_id.trim() : "";
+  if (!hid || hid.length > 200) return err(c, "INVALID_BODY", "ps_hospital_id가 필요합니다.", 400);
+  const type = typeof body?.type === "string" ? body.type : "profile_updated";
+  if (type === "subscription_updated") await clearHubEntitlement(c.env, hid);
+  return c.json({ ok: true, type, cleared: type === "subscription_updated" });
 });
 
 /* ── 공급 API (PS Open API v1) ── */
@@ -187,16 +208,18 @@ api.post("/admin/login", async (c) => {
 });
 api.post("/admin/run/:id", async (c) => {
   if (!(await adminAuthorized(c))) return c.text("forbidden", 403);
-  const h = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(Number(c.req.param("id"))).first<HospitalRow>();
-  if (!h) return c.text("no hospital", 404);
+  const row = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(Number(c.req.param("id"))).first<HospitalRow>();
+  if (!row) return c.text("no hospital", 404);
+  const h = await withHubPlan(c.env, row);
   const r = await runHospital(c.env, h, { kind: "manual", batch: 40, finalizeEarly: true });
   return c.redirect("/admin?msg=" + encodeURIComponent(r.ok ? (r.done ? `#${h.id} 측정 완료 · 총점 ${r.total ?? "—"}` : `#${h.id} 부분 처리`) : `#${h.id} 실패: ${r.skipped || r.error || "blocked"}`));
 });
 /** 마지막 완료 run 의 관측치로 검색 기회·처방만 다시 계산(재수집 없음) — 곡선·처방 규칙을 바꿨을 때 */
 api.post("/admin/recompute/:id", async (c) => {
   if (!(await adminAuthorized(c))) return c.text("forbidden", 403);
-  const h = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(Number(c.req.param("id"))).first<HospitalRow>();
-  if (!h) return c.text("no hospital", 404);
+  const row = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(Number(c.req.param("id"))).first<HospitalRow>();
+  if (!row) return c.text("no hospital", 404);
+  const h = await withHubPlan(c.env, row);
   const run = await c.env.DB.prepare("SELECT id, run_date FROM crawl_runs WHERE hospital_id = ? AND status = 'completed' ORDER BY run_date DESC, id DESC LIMIT 1").bind(h.id).first<{ id: number; run_date: string }>();
   if (!run) return c.redirect("/admin?msg=" + encodeURIComponent(`#${h.id} 완료된 측정이 없습니다`));
   const week = weekStart(new Date(run.run_date + "T12:00:00+09:00"));

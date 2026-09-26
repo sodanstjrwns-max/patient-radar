@@ -7,6 +7,7 @@ import { generateKeywords, normalizeTreatments, rankCandidates, type Candidate }
 import { fetchKeywordIdeas } from "../collectors/naver-searchad";
 import { resolveChannel } from "../collectors/youtube";
 import { limitsOf } from "../lib/plan-limits";
+import { withHubPlan, hubPlanLine } from "../lib/hub-entitlement";
 import { runHospital, loadEntities, obsScore, parseJsonArr, usablePlatforms, opportunityOfRun } from "../lib/measure";
 import { htmlSerp } from "../collectors/naver-html";
 import { collectNaverApi } from "../collectors/naver-api";
@@ -507,7 +508,7 @@ app.get("/app/evidence/:runId/:keywordId", async (c) => {
 
 /* ── 설정 ── */
 async function renderSettings(c: { env: AppEnv["Bindings"]; get: (k: "hospital") => HospitalRow }, flash?: string | null, flashErr?: string | null) {
-  const h = await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(c.get("hospital").id).first<HospitalRow>() as HospitalRow;
+  const h = await withHubPlan(c.env, await c.env.DB.prepare("SELECT * FROM hospitals WHERE id = ?").bind(c.get("hospital").id).first<HospitalRow>() as HospitalRow);
   const db = c.env.DB;
   const keywords = (await db.prepare("SELECT id, text, is_active, source, monthly_pc, monthly_mobile, volume_low, target_rank FROM keywords WHERE hospital_id = ? ORDER BY sort_order, id").bind(h.id).all()).results as { id: number; text: string; is_active: number; source: string; monthly_pc: number | null; monthly_mobile: number | null; volume_low: number; target_rank: number | null }[];
   const competitors = (await db.prepare("SELECT id, name, is_active, naver_place_id FROM competitors WHERE hospital_id = ? ORDER BY id").bind(h.id).all()).results as { id: number; name: string; is_active: number; naver_place_id: string | null }[];
@@ -521,7 +522,7 @@ async function renderSettings(c: { env: AppEnv["Bindings"]; get: (k: "hospital")
   const ytList: { id: string; title: string }[] = (() => { try { return JSON.parse(h.youtube_channels || "[]"); } catch { return []; } })();
   const social = { youtube: { input: ytList.map((x) => `https://www.youtube.com/channel/${x.id}`).join("\n"), title: ytList.map((x) => x.title).join(" · ") || null, enabled: a.youtube, channels: ytList }, instagram: { username: h.ig_username, enabled: a.instagram }, threads: { username: h.threads_username, enabled: a.threads }, latest };
   return Settings({ h: hv(h), social, err: flashErr, hospital: { name: h.name, aliases: parseJsonArr(h.name_aliases).join(", "), clinic_type: h.clinic_type || "치과", region: regionOf(h), treatments: parseJsonArr(h.key_treatments).join(", "), naver_place_id: h.naver_place_id || "", website_url: h.website_url || "" },
-    keywords, competitors, settings, users, limits: lim, flash,
+    keywords, competitors, settings, users, limits: lim, flash, hubLine: hubPlanLine(h.hub_ent),
     platform: { naver: st(u.naver, lim.platforms.includes("naver"), a.naver) + (a.naverMode ? ` · ${a.naverMode === "api" ? "공식 API" : "HTML"}` : ""), google: st(u.google, lim.platforms.includes("google"), a.google), kakao: st(u.kakao, lim.platforms.includes("kakao"), a.kakao), signal: st(u.signal, lim.platforms.includes("signal"), a.signal), mail: a.mail ? "설정됨" : "키 필요(운영자)" } });
 }
 app.get("/app/settings", async (c) => { if (limitsOf(c.get("hospital").plan).competitors > 0) await pullHubCompetitors(c, c.get("hospital")); return c.html(await renderSettings(c, c.req.query("ok") ? "저장했습니다." : null, c.req.query("err") || null)); });

@@ -450,8 +450,9 @@ export function Evidence({ h, keyword, keywordId, run, block, hasFullBlock, sect
 }
 
 /* ───────── 설정 ───────── */
-export function Settings({ h, hospital, keywords, competitors, settings, users, limits, platform, flash, social, err }: {
+export function Settings({ h, hospital, keywords, competitors, settings, users, limits, platform, flash, social, err, hubLine }: {
   h: { name: string; plan: string };
+  hubLine?: string | null;
   hospital: { name: string; aliases: string; clinic_type: string; region: string; treatments: string; naver_place_id: string; website_url: string };
   keywords: { id: number; text: string; is_active: number; source: string; monthly_pc?: number | null; monthly_mobile?: number | null; volume_low?: number; target_rank?: number | null }[];
   competitors: { id: number; name: string; is_active: number; naver_place_id: string | null }[];
@@ -538,6 +539,7 @@ export function Settings({ h, hospital, keywords, competitors, settings, users, 
         <div class="card">
           <h2>플랜 · 측정 플랫폼</h2>
           <p><span class="plan-chip">{h.plan}</span> 키워드 {limits.keywords} · 경쟁사 {limits.competitors} · 월 측정일 {limits.monthlyRunDays}일 · <a class="text-link" href="https://hub.patientfunnel.kr" target="_blank" rel="noopener">플랜 변경은 허브에서 ↗</a></p>
+          {hubLine ? <p class="muted small">{hubLine}</p> : null}
           <ul class="plain">
             <li>네이버: {platform.naver}</li><li>구글: {platform.google}</li><li>카카오맵: {platform.kakao}</li><li>AI(시그널): {platform.signal}</li><li>메일: {platform.mail}</li>
           </ul>
