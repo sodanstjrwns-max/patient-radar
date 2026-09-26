@@ -73,6 +73,46 @@ export async function withHubPlan<T extends { plan: string; ps_hospital_id: stri
   return { ...h, local_plan: h.plan, plan: effectivePlan(h.plan, ent), hub_ent: ent };
 }
 
+/** 【2026-09-26】크론 판정용 일괄 유효 플랜 — 병원마다 withHubPlan 을 Promise.all 로 부르면 병원 수만큼
+ *  D1 읽기+쓰기+허브 fetch 가 동시에 나가 요청당 D1 1,000 한도를 ~330곳에서 넘긴다.
+ *  캐시는 한 쿼리로 읽고, 캐시 없는 곳만 허브를 동시 6개씩 부르고, 캐시 쓰기는 batch 로 묶는다. 판정 규칙(TTL·validEnt·effectivePlan)은 같다.
+ *  한계: 허브 fetch 는 캐시 없는 병원 수만큼(요청당 fetch 1,000) — ~900곳 넘으면 허브에 일괄 조회 API 필요. */
+export async function hubPlansBulk<T extends { id: number; plan: string; ps_hospital_id: string | null }>(env: Bindings, rows: T[], concurrency = 6): Promise<Map<number, Plan>> {
+  const out = new Map<number, Plan>(rows.map((h) => [h.id, planOf(h.plan)]));
+  const targets = rows.filter((h) => (h.ps_hospital_id || "").trim());
+  if (!env.HUB_API_KEY || !targets.length) return out;
+  const cache = new Map<string, { payload: string; fetched_at: number }>();
+  try {
+    for (const r of (await env.DB.prepare("SELECT ps_hospital_id, payload, fetched_at FROM hub_entitlement_cache").all()).results as { ps_hospital_id: string; payload: string; fetched_at: number }[]) cache.set(r.ps_hospital_id, r);
+  } catch { /* 테이블 없음 → 캐시 없이 */ }
+  const misses: T[] = [];
+  for (const h of targets) {
+    const hid = h.ps_hospital_id!.trim();
+    const c = cache.get(hid);
+    if (c && Date.now() - Number(c.fetched_at) < TTL_MS) {
+      try { const cached = JSON.parse(c.payload) as HubEntitlement | null; out.set(h.id, effectivePlan(h.plan, cached ? validEnt(cached, cached.via) : null)); continue; } catch { /* 깨진 캐시 → 다시 읽기 */ }
+    }
+    misses.push(h);
+  }
+  const writes: D1PreparedStatement[] = [];
+  for (let i = 0; i < misses.length; i += concurrency) {
+    await Promise.all(misses.slice(i, i + concurrency).map(async (h) => {
+      const hid = h.ps_hospital_id!.trim();
+      try {
+        const res = await fetch(`${HUB_ORIGIN}/api/v1/entitlements`, { headers: { Authorization: `Bearer ${env.HUB_API_KEY}`, "X-PS-Hospital-Id": hid }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+        let ent: HubEntitlement | null;
+        if (res.status === 404) ent = null;
+        else if (!res.ok) return;   // 실패 = 로컬 플랜 그대로(캐시 안 함)
+        else ent = pickEntitlement((await res.json()) as Parameters<typeof pickEntitlement>[0]);
+        out.set(h.id, effectivePlan(h.plan, ent));
+        writes.push(env.DB.prepare("INSERT INTO hub_entitlement_cache (ps_hospital_id, payload, fetched_at) VALUES (?,?,?) ON CONFLICT(ps_hospital_id) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at").bind(hid, JSON.stringify(ent), Date.now()));
+      } catch { /* 로컬 플랜 그대로 */ }
+    }));
+  }
+  try { for (let i = 0; i < writes.length; i += 50) await env.DB.batch(writes.slice(i, i + 50)); } catch { /* ignore */ }
+  return out;
+}
+
 /** 설정 화면 한 줄. 권한이 없으면 null */
 export function hubPlanLine(ent: HubEntitlement | null): string | null {
   if (!ent) return null;

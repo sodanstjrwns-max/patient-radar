@@ -6,7 +6,7 @@ import { equalSecret, adminAuthorized, issueAdminSession } from "../lib/security
 import type { HospitalRow } from "../lib/session";
 import { runHospital, syncReviews, loadEntities, computeOpportunities, syncPrescriptions, refreshPlaceSnapshots } from "../lib/measure";
 import { limitsOf } from "../lib/plan-limits";
-import { withHubPlan, clearHubEntitlement } from "../lib/hub-entitlement";
+import { withHubPlan, clearHubEntitlement, hubPlansBulk } from "../lib/hub-entitlement";
 import { buildWeeklyReport, reportToText, sendMail, sendOpsAlert } from "../lib/report";
 import { kstDate, kstIso, weekStart } from "../lib/time";
 import { AdminLogin, AdminPage } from "../views-app";
@@ -27,7 +27,10 @@ api.get("/api/cron/due", async (c) => {
   const force = c.req.query("all") === "1";
   const raw = (await c.env.DB.prepare("SELECT id, plan, ps_hospital_id FROM hospitals WHERE status = 'active' AND onboarded_at IS NOT NULL ORDER BY id").all()).results as { id: number; plan: string; ps_hospital_id: string | null }[];
   // L 추가 측정 판정에 허브 올패스 유효 플랜을 쓴다(캐시 30분, 실패 시 로컬 플랜)
-  const rows = dow === 3 && !force ? await Promise.all(raw.map((h) => withHubPlan(c.env, h))) : raw;
+  // 【2026-09-26】전 병원 Promise.all(withHubPlan) → 이미 오늘 차례이거나 로컬 L 인 곳은 빼고, 나머지만 일괄 조회(D1 한도·동시 fetch 폭주 방지). 판정 결과는 같다.
+  const need = dow === 3 && !force ? raw.filter((h) => h.id % 5 !== 3 && h.plan !== "L") : [];
+  const eff = need.length ? await hubPlansBulk(c.env, need) : new Map<number, string>();
+  const rows = raw.map((h) => ({ ...h, plan: eff.get(h.id) ?? h.plan }));
   const due = rows.filter((h) => force || (dow <= 4 && (h.id % 5 === dow || (h.plan === "L" && dow === 3)))).map((h) => h.id);
   return c.json({ date: kstDate(), weekday: dow, due });
 });
@@ -40,7 +43,9 @@ api.post("/api/cron/run-hospital/:id", async (c) => {
   const h = await withHubPlan(c.env, row);
   const kind = c.req.query("kind") === "manual" ? "manual" : "weekly";
   const batch = Math.min(Math.max(Number(c.req.query("batch") || 6), 1), 40);
-  const r = await runHospital(c.env, h, { kind, batch });
+  // 【2026-09-26】호출당 45초 예산(워커 타임아웃 60초) — 넘으면 done:false 로 돌려주고 워커가 다시 부른다(마무리 단계도 이어서)
+  const budgetMs = Math.min(Math.max(Number(c.req.query("budget_ms") || 45_000), 10_000), 55_000);
+  const r = await runHospital(c.env, h, { kind, batch, budgetMs });
   if (!r.ok && r.blocked) await sendOpsAlert(c.env, "네이버 차단 감지", `병원 #${h.id} ${h.name} run ${r.runId ?? "-"}: 오늘 수집을 중단했습니다.`);
   if (r.ok && r.done && r.blocked) await sendOpsAlert(c.env, "네이버 차단 감지(부분 완료)", `병원 #${h.id} ${h.name} run ${r.runId}`);
   return c.json(r, r.ok ? 200 : 200);
@@ -66,7 +71,8 @@ api.post("/api/cron/reviews", async (c) => {
     const h = await withHubPlan(c.env, row);
     try {
       const entities = (await loadEntities(c.env.DB, h, limitsOf(h.plan).competitors));
-      const r = await syncReviews(c.env, h, entities);
+      // 【2026-09-26】병원 1곳 호출(워커 분할)이면 45초 예산 + 오늘 이미 수집한 엔티티(측정 마무리 등) 건너뜀 — 남으면 partial:true, 워커가 다시 부른다
+      const r = await syncReviews(c.env, h, entities, undefined, only ? { skipDoneToday: true, deadline: Date.now() + 45_000 } : {});
       let mailed = false;
       if (r.newNegatives.length && c.env.RESEND_API_KEY) {
         const users = (await c.env.DB.prepare("SELECT email FROM hospital_users WHERE hospital_id = ?").bind(h.id).all()).results as { email: string }[];
@@ -77,7 +83,7 @@ api.post("/api/cron/reviews", async (c) => {
           mailed = (await sendMail(c.env, to, `[페이션트 레이더] ${h.name} 부정 리뷰 ${r.newNegatives.length}건`, text)).ok;
         }
       }
-      out.push({ id: h.id, fetched: r.fetched, inserted: r.inserted, negative: r.negative, mailed });
+      out.push({ id: h.id, fetched: r.fetched, inserted: r.inserted, negative: r.negative, mailed, partial: r.partial });
     } catch (e) { out.push({ id: h.id, error: String(e).slice(0, 80), blocked: String(e).includes("NAVER_BLOCKED") }); if (String(e).includes("NAVER_BLOCKED")) break; }
     if (!only) await new Promise((res) => setTimeout(res, 2000));   // 병원 1곳 호출(워커 분할)이면 쉬는 건 워커가 한다
   }
@@ -110,6 +116,25 @@ api.post("/api/cron/weekly-reports", async (c) => {
     out.push({ id: h.id, built: true, sent: m.ok, error: m.error });
   }
   return c.json({ week, results: out });
+});
+
+/** 【2026-09-26】관측치 보관 정책(기본 꺼짐) — OBS_RETENTION_DAYS 가 있을 때만, 그보다 오래된 측정일의 observations 를 5,000행씩 지운다.
+ *  화면·리포트는 최근 10회·2회 run 만 읽으므로(120일 ≥ S·M 17회, L 40회) 표시가 바뀌지 않는다. crawl_runs·weekly_scores·평판 추이는 남긴다.
+ *  500병원(M 기준 run 1회 ≈ 450행·≈225KB) → 관측치만 월 ≈0.5~1.2GB — 보관 정책 없으면 D1 10GB 를 1년 안에 넘는다. */
+api.post("/api/cron/retention", async (c) => {
+  if (!c.env.CRON_SECRET) return err(c, "CRON_NOT_CONFIGURED", "크론 시크릿이 필요합니다.", 503);
+  if (!(await cronAuth(c))) return err(c, "UNAUTHORIZED", "크론 인증이 필요합니다.", 401);
+  const days = Math.floor(Number(c.env.OBS_RETENTION_DAYS || 0));
+  if (!days) return c.json({ skipped: "retention_off" });
+  const keep = Math.max(days, 120);
+  const cutoff = kstDate(new Date(Date.now() - keep * 86400_000));
+  const t0 = Date.now(); let deleted = 0;
+  for (let i = 0; i < 10 && Date.now() - t0 < 20_000; i++) {
+    const r = await c.env.DB.prepare("DELETE FROM observations WHERE id IN (SELECT o.id FROM observations o JOIN crawl_runs r ON r.id = o.run_id WHERE r.run_date < ? LIMIT 5000)").bind(cutoff).run();
+    const n = Number(r.meta?.changes || 0); deleted += n;
+    if (n < 5000) break;
+  }
+  return c.json({ keep_days: keep, cutoff, deleted });
 });
 
 /* ── 허브 → 레이더 이벤트 웹훅: POST /api/v1/hub-events (Bearer PS_SSO_SECRET, 형제 서비스와 같은 방식) ──

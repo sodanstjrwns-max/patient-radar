@@ -32,6 +32,9 @@ export type RunOptions = {
   delayMs?: () => number;
   fetchImpl?: typeof fetch;
   onProgress?: (line: string) => void;
+  /** 【2026-09-26】호출 1회 시간 예산(ms). 크론 경로만 넘긴다 — 넘으면 done:false 로 돌려주고 다음 호출이 이어서 한다.
+   *  예산이 있을 때는 마무리 단계에서 오늘 이미 끝난 엔티티(평판 스냅샷·리뷰 통계)를 건너뛰어 재호출이 앞으로 나아가게 한다. 없으면 기존 동작 그대로. */
+  budgetMs?: number;
 };
 export type PlatformSummary = Record<string, { score: number | null; sov: number | null; shown: number }>;
 export type RunResult =
@@ -88,13 +91,21 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
   const log = opts.onProgress || (() => {});
   const runDate = kstDate();
   const week = weekStart();
+  // 【2026-09-26】시간 예산: 크론 워커의 앱 호출 타임아웃(60초) 안에서 끊고 이어서 하기 위함
+  const deadline = opts.budgetMs && opts.budgetMs > 0 ? Date.now() + opts.budgetMs : Infinity;
+  const overBudget = () => Date.now() > deadline;
   if (!use.naver && !use.google && !use.kakao && !use.signal) return { ok: false, skipped: "no_platform" };
   const pause = await db.prepare("SELECT reason FROM collection_pauses WHERE scope = 'naver' AND until_date >= ?").bind(runDate).first<{ reason: string }>();
   const naverPaused = !!pause;
   if (naverPaused && !use.google && !use.kakao && !use.signal) return { ok: false, skipped: "paused" };
 
   // ── 오늘의 run 찾기/만들기 (하루 1건)
-  let run = await db.prepare("SELECT id, status, kind FROM crawl_runs WHERE hospital_id = ? AND run_date = ?").bind(h.id, runDate).first<{ id: number; status: string; kind: string }>();
+  let run = await db.prepare("SELECT id, status, kind, error FROM crawl_runs WHERE hospital_id = ? AND run_date = ?").bind(h.id, runDate).first<{ id: number; status: string; kind: string; error?: string | null }>();
+  // 【2026-09-26】실패 재시도: 크론(예산 모드)이 같은 날 다시 부르면 실패한 정기 측정을 이어서 한다(이미 저장된 키워드는 건너뜀). 키워드 없음·차단은 제외
+  if (run && run.status === "failed" && opts.kind === "weekly" && run.kind === "weekly" && deadline !== Infinity && run.error !== "no_keywords") {
+    await db.prepare("UPDATE crawl_runs SET status = 'running', error = NULL, finished_at = NULL WHERE id = ? AND status = 'failed'").bind(run.id).run();
+    run = { ...run, status: "running" };
+  }
   if (run && run.status !== "running") {
     if (opts.kind === "manual") {
       await db.batch([db.prepare("DELETE FROM observations WHERE run_id = ?").bind(run.id), db.prepare("DELETE FROM crawl_runs WHERE id = ?").bind(run.id)]);
@@ -117,9 +128,11 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
   const entities = await loadEntities(db, h, limits.competitors);
   const errors: string[] = [];
   let blocked = false;
+  let processed = 0;   // 【2026-09-26】예산으로 중간에 끊을 수 있어 실제 처리 수를 센다
 
   try {
     for (const kw of batch) {
+      if (processed > 0 && overBudget()) break;   // 최소 1개는 처리(진행 보장)
       const obs: Obs[] = [];
       if (use.naver && !naverPaused && !blocked) {
         try {
@@ -179,20 +192,31 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
         });
         for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
       }
+      processed++;
       if (blocked) break;
     }
 
-    const remaining = blocked ? 0 : pending.length - batch.length;
-    if (remaining > 0 && !opts.finalizeEarly) return { ok: true, done: false, runId, processed: batch.length, remaining };
+    const remaining = blocked ? 0 : pending.length - processed;
+    if (remaining > 0 && !opts.finalizeEarly) return { ok: true, done: false, runId, processed, remaining };
+    // 【2026-09-26】마무리 단계가 예산을 넘기면 여기까지 저장된 것은 두고 다음 호출에서 이어서(예산 있을 때만)
+    const partial = (): RunResult => ({ ok: true, done: false, runId, processed, remaining: 0 });
+    if (processed > 0 && overBudget()) return partial();
 
     // ── 마무리: 평판 스냅샷 · 시그널 반입 · 주간 점수 · 경보
     const reputation: { entityKey: string; platform: string; review_count: number | null; blog_review_count: number | null; rating: number | null; detail: Record<string, unknown> }[] = [];
+    const resumable = deadline !== Infinity;
     if (use.naver && use.naverMode === "html" && !naverPaused && !blocked) {
+      // 【2026-09-26】예산 모드: 오늘 이미 저장된 엔티티는 건너뛰고, 긁은 즉시 저장해 다음 호출이 이어서 한다
+      const doneRep = resumable ? new Set(((await db.prepare("SELECT entity_type, entity_id FROM reputation_snapshots WHERE hospital_id = ? AND platform = 'naver_place' AND snapshot_date = ?").bind(h.id, runDate).all()).results as { entity_type: string; entity_id: number | null }[]).map((r) => (r.entity_type === "self" ? "self" : `c${r.entity_id}`))) : new Set<string>();
       for (const e of entities) {
-        if (!e.placeId) continue;
+        if (!e.placeId || doneRep.has(e.key)) continue;
+        if (overBudget()) return partial();
         try {
           const p = await htmlPlace(e.placeId, fetchImpl);
-          reputation.push({ entityKey: e.key, platform: "naver_place", review_count: p.visitorReviews, blog_review_count: p.blogReviews, rating: null, detail: { name: p.name, category: p.category, completeness: p.completeness ?? null } });
+          const rep = { entityKey: e.key, platform: "naver_place", review_count: p.visitorReviews, blog_review_count: p.blogReviews, rating: null, detail: { name: p.name, category: p.category, completeness: p.completeness ?? null } };
+          if (resumable) await db.prepare("INSERT OR REPLACE INTO reputation_snapshots (hospital_id, entity_type, entity_id, platform, snapshot_date, review_count, blog_review_count, rating, detail, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+            .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, rep.platform, runDate, rep.review_count, rep.blog_review_count, rep.rating, JSON.stringify(rep.detail), kstIso()).run();
+          else reputation.push(rep);
           log(`${e.name} · 방문자리뷰 ${p.visitorReviews ?? "—"} · 블로그리뷰 ${p.blogReviews ?? "—"}`);
           await sleep(2000);
         } catch (err) {
@@ -212,12 +236,15 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
         reputation.push({ entityKey: key, platform: "google_business", review_count: d.ratingCount ?? null, blog_review_count: null, rating: d.rating ?? null, detail: { placeId: d.placeId } });
       }
     }
+    // 【2026-09-26】엔티티마다 1쿼리 → 한 번에 batch
+    const repStmts: D1PreparedStatement[] = [];
     for (const r of reputation) {
       const ent = entities.find((e) => e.key === r.entityKey);
       if (!ent) continue;
-      await db.prepare("INSERT OR REPLACE INTO reputation_snapshots (hospital_id, entity_type, entity_id, platform, snapshot_date, review_count, blog_review_count, rating, detail, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-        .bind(h.id, r.entityKey === "self" ? "self" : "competitor", ent.competitorId, r.platform, runDate, r.review_count, r.blog_review_count, r.rating, JSON.stringify(r.detail), kstIso()).run();
+      repStmts.push(db.prepare("INSERT OR REPLACE INTO reputation_snapshots (hospital_id, entity_type, entity_id, platform, snapshot_date, review_count, blog_review_count, rating, detail, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+        .bind(h.id, r.entityKey === "self" ? "self" : "competitor", ent.competitorId, r.platform, runDate, r.review_count, r.blog_review_count, r.rating, JSON.stringify(r.detail), kstIso()));
     }
+    for (let i = 0; i < repStmts.length; i += 40) await db.batch(repStmts.slice(i, i + 40));
     // ── 검색량 갱신 (30일 지난 것만, 검색광고 API 키 있을 때)
     if (platformAvailability(env).searchVolume) {
       try {
@@ -236,14 +263,21 @@ export async function runHospital(env: Bindings, h: HospitalRow, opts: RunOption
     }
     // ── 리뷰 본문(네이버 방문자 리뷰, 본원+경쟁사) → 분석·통계·부정 리뷰 경보
     if (use.naver && use.naverMode === "html" && !naverPaused && !blocked) {
-      try { const r = await syncReviews(env, h, entities, fetchImpl); log(`리뷰 ${r.fetched}건 확인 · 새 리뷰 ${r.inserted}건 · 부정 ${r.negative}건`); } catch (e) { errors.push(`reviews ${String(e).slice(0, 60)}`); }
+      try {
+        const r = await syncReviews(env, h, entities, fetchImpl, resumable ? { skipDoneToday: true, deadline } : undefined);
+        log(`리뷰 ${r.fetched}건 확인 · 새 리뷰 ${r.inserted}건 · 부정 ${r.negative}건`);
+        if (r.partial) return partial();   // 【2026-09-26】예산 초과 — 남은 엔티티는 다음 호출에서
+      } catch (e) { errors.push(`reviews ${String(e).slice(0, 60)}`); }
     }
     // ── 콘텐츠 도달(3층): 유튜브·인스타·스레드 스냅샷
     try { const r = await syncSocial(env, h, fetchImpl); for (const line of r) log(line); } catch (e) { errors.push(`social ${String(e).slice(0, 60)}`); }
     // ── 페이션트 폼 내원경로 반입(병원별 키가 있을 때, 최근 8주)
     try { await syncArrivals(env, h.id, fetchImpl); } catch (e) { errors.push(`form ${String(e).slice(0, 60)}`); }
     // ── 유튜브 검색 노출(키워드별 상위 20 중 우리 채널 첫 순위) — 공개 API, 검색 1회 100유닛
-    try { const n = await syncYoutubeSearch(env, h, runId, all, fetchImpl); if (n) log(`유튜브 검색 노출 ${n}개 키워드`); } catch (e) { errors.push(`youtube_search ${String(e).slice(0, 60)}`); }
+    try {
+      const n = await syncYoutubeSearch(env, h, runId, all, fetchImpl, deadline); if (n > 0) log(`유튜브 검색 노출 ${n}개 키워드`);
+      if (n < 0) return partial();   // 【2026-09-26】예산 초과 — 남은 키워드는 다음 호출에서(이미 한 키워드는 건너뜀)
+    } catch (e) { errors.push(`youtube_search ${String(e).slice(0, 60)}`); }
     const { platforms, total } = await computeWeeklyScores(db, h.id, runId, week, signalScore);
     try { await computeOpportunities(db, h.id, runId, week); } catch (e) { errors.push(`opportunity ${String(e).slice(0, 60)}`); }
     try { await syncPrescriptions(db, h.id, runId, week, runDate); } catch (e) { errors.push(`prescriptions ${String(e).slice(0, 60)}`); }
@@ -417,21 +451,33 @@ export async function syncSocial(env: Bindings, h: HospitalRow, fetchImpl: typeo
 }
 
 /** 네이버 방문자 리뷰 수집(플레이스 ID 있는 본원·경쟁사) → reviews(중복 제외) → review_stats(30일) → 부정 리뷰 경보 */
-export async function syncReviews(env: Bindings, h: HospitalRow, entities: EntityX[], fetchImpl: typeof fetch = fetch) {
+/** 【2026-09-26】opts.skipDoneToday: 오늘 review_stats 가 이미 있는 엔티티는 건너뜀(재호출 이어서·같은 날 중복 수집 방지)
+ *  opts.deadline: 넘으면 남은 엔티티를 두고 partial:true 로 돌아온다. 둘 다 없으면 기존 동작 그대로. */
+export async function syncReviews(env: Bindings, h: HospitalRow, entities: EntityX[], fetchImpl: typeof fetch = fetch, opts: { skipDoneToday?: boolean; deadline?: number } = {}) {
   const db = env.DB; const today = kstDate(); const since30 = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
-  let fetched = 0, inserted = 0, negative = 0;
+  let fetched = 0, inserted = 0, negative = 0, partial = false;
   const newNegatives: { entity: string; body: string; complaints: string[] }[] = [];
+  const doneToday = opts.skipDoneToday
+    ? new Set(((await db.prepare("SELECT entity_type, entity_id FROM review_stats WHERE hospital_id = ? AND platform = 'naver_place' AND stat_date = ?").bind(h.id, today).all()).results as { entity_type: string; entity_id: number | null }[]).map((r) => (r.entity_type === "self" ? "self" : `c${r.entity_id}`)))
+    : new Set<string>();
+  let touched = 0;
   for (const e of entities) {
-    if (!e.placeId) continue;
+    if (!e.placeId || doneToday.has(e.key)) continue;
+    if (opts.deadline && touched > 0 && Date.now() > opts.deadline) { partial = true; break; }   // 최소 1곳은 처리(진행 보장)
+    touched++;
     let list;
     try { list = await collectNaverReviews(e.placeId, fetchImpl); } catch (err) { if (err instanceof NaverBlockedError) throw err; continue; }
     fetched += list.length;
-    for (const r of list) {
-      const a = analyzeReview(r.body, h.clinic_type);
-      const neg = isNegative(null, a.complaints);
-      const res = await db.prepare("INSERT OR IGNORE INTO reviews (hospital_id, entity_type, entity_id, platform, review_key, rating, body, reply, visit_count, written_at, treatments, complaints, negative, photo_count, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", r.key, null, r.body.slice(0, 2000), r.reply ? r.reply.slice(0, 1000) : null, r.visitCount, r.writtenAt, JSON.stringify(a.treatments), JSON.stringify(a.complaints), neg ? 1 : 0, r.photoCount, kstIso()).run();
-      if (res.meta.changes) { inserted++; if (neg) { negative++; if (e.key === "self") newNegatives.push({ entity: e.name, body: r.body.slice(0, 120), complaints: a.complaints }); } }
+    // 【2026-09-26】리뷰 1건당 INSERT 1회 → db.batch 로 묶음(요청당 D1 1,000 한도·왕복 시간). 결과별 meta.changes 로 새 리뷰만 센다(판정 동일)
+    const analyzed = list.map((r) => { const a = analyzeReview(r.body, h.clinic_type); return { r, a, neg: isNegative(null, a.complaints) }; });
+    const stmts = analyzed.map(({ r, a, neg }) => db.prepare("INSERT OR IGNORE INTO reviews (hospital_id, entity_type, entity_id, platform, review_key, rating, body, reply, visit_count, written_at, treatments, complaints, negative, photo_count, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId, "naver_place", r.key, null, r.body.slice(0, 2000), r.reply ? r.reply.slice(0, 1000) : null, r.visitCount, r.writtenAt, JSON.stringify(a.treatments), JSON.stringify(a.complaints), neg ? 1 : 0, r.photoCount, kstIso()));
+    for (let i = 0; i < stmts.length; i += 50) {
+      const results = await db.batch(stmts.slice(i, i + 50));
+      results.forEach((res, j) => {
+        const { r, a, neg } = analyzed[i + j];
+        if (res.meta?.changes) { inserted++; if (neg) { negative++; if (e.key === "self") newNegatives.push({ entity: e.name, body: r.body.slice(0, 120), complaints: a.complaints }); } }
+      });
     }
     // 30일 통계
     const rows = (await db.prepare("SELECT negative, reply, treatments, complaints, body, photo_count FROM reviews WHERE hospital_id = ? AND platform = 'naver_place' AND entity_type = ? AND COALESCE(entity_id, 0) = ? AND written_at >= ?").bind(h.id, e.key === "self" ? "self" : "competitor", e.competitorId ?? 0, since30).all()).results as { negative: number; reply: string | null; treatments: string; complaints: string; body: string; photo_count: number }[];
@@ -450,7 +496,7 @@ export async function syncReviews(env: Bindings, h: HospitalRow, entities: Entit
   }
   // 90일 지난 본문 파기(통계는 남음)
   await db.prepare("DELETE FROM reviews WHERE hospital_id = ? AND fetched_at < ?").bind(h.id, new Date(Date.now() - 90 * 86400_000).toISOString()).run();
-  return { fetched, inserted, negative, newNegatives };
+  return { fetched, inserted, negative, newNegatives, partial };
 }
 
 /** 플레이스 평판·완성도 스냅샷만 다시 긁는다(재계산용, 네이버 HTML 모드) */
@@ -536,7 +582,8 @@ export async function detectNewCompetitors(db: D1Database, h: HospitalRow, runId
 }
 
 /** 유튜브 검색 노출 — 활성 키워드마다 검색 상위 20 중 우리 채널 첫 순위를 observations(platform youtube) 에 저장 */
-export async function syncYoutubeSearch(env: Bindings, h: HospitalRow, runId: number, keywords: { id: number; text: string }[], fetchImpl: typeof fetch): Promise<number> {
+/** 【2026-09-26】deadline 을 넘기면 -1(미완료)을 돌려준다. 완료면 이번에 처리한 키워드 수 */
+export async function syncYoutubeSearch(env: Bindings, h: HospitalRow, runId: number, keywords: { id: number; text: string }[], fetchImpl: typeof fetch, deadline = Infinity): Promise<number> {
   if (!env.YOUTUBE_API_KEY) return 0;
   const channels: { id: string }[] = (() => { try { const a = JSON.parse(h.youtube_channels || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } })();
   if (!channels.length && h.youtube_channel_id) channels.push({ id: h.youtube_channel_id });
@@ -546,6 +593,7 @@ export async function syncYoutubeSearch(env: Bindings, h: HospitalRow, runId: nu
   let n = 0;
   for (const kw of keywords) {
     if (done.has(kw.id)) continue;
+    if (Date.now() > deadline) return -1;
     const r = await youtubeSearchRank(kw.text, ids, { YOUTUBE_API_KEY: env.YOUTUBE_API_KEY }, fetchImpl);
     await env.DB.prepare("INSERT OR REPLACE INTO observations (run_id, hospital_id, keyword_id, platform, entity_type, entity_id, shown, rank, section, detail, observed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
       .bind(runId, h.id, kw.id, "youtube", "self", null, r.rank != null ? 1 : 0, r.rank, r.rank != null ? "search" : null, JSON.stringify({ channelId: r.channelId, videoTitle: r.videoTitle, top: r.top }), kstIso()).run();

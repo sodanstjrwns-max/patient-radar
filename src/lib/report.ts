@@ -120,12 +120,15 @@ export function reportToText(r: ReportContent): string {
 
 export async function sendMail(env: Bindings, to: string[], subject: string, text: string, html?: string): Promise<{ ok: boolean; id?: string; error?: string }> {
   if (!env.RESEND_API_KEY) return { ok: false, error: "MAIL_NOT_CONFIGURED" };
-  const res = await fetch("https://api.resend.com/emails", {
+  const call = () => fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({ from: env.MAIL_FROM || "Patient Radar <radar@patientsignal.kr>", to, subject, text, html }),
     signal: AbortSignal.timeout(15000),
   });
+  let res = await call();
+  // 【2026-09-26】Resend 초당 한도(429)면 잠깐 쉬고 한 번 더 — 주간 리포트를 병원 2곳씩 동시에 보내도 누락되지 않게
+  if (res.status === 429) { await res.body?.cancel(); await new Promise((r) => setTimeout(r, 1200)); res = await call(); }
   const j = (await res.json().catch(() => ({}))) as { id?: string; message?: string };
   if (!res.ok || !j.id) return { ok: false, error: j.message || `HTTP_${res.status}` };
   return { ok: true, id: j.id };

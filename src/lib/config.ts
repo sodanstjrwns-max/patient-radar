@@ -37,6 +37,8 @@ export type Bindings = {
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
   OPS_EMAIL?: string;
+  /** 【2026-09-26】관측치 보관 일수(비우면 삭제 안 함 = 기존 동작). 원장 결정 후 180 등으로 켠다. 최소 120 */
+  OBS_RETENTION_DAYS?: string;
 };
 export function publicOrigin(env: Pick<Bindings, "PUBLIC_ORIGIN">): string {
   const url = new URL(env.PUBLIC_ORIGIN || DEFAULT_PUBLIC_ORIGIN);
